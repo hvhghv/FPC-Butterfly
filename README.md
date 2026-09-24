@@ -345,6 +345,25 @@ curl -X POST -d '{"pin":""}' http://192.168.4.1/api/ble/pin
 
 设备名：`Butterfly-LED`
 
+### 广播内容
+
+| 位置 | 内容 | 说明 |
+|------|------|------|
+| 广播包 (ADV_IND) | flags + 设备名 + **16 位 UUID `0xFFE0`** | 22 字节，不超 31 字节上限 |
+| scan response | 128 位服务 UUID | 手机扫描时可识别服务 |
+
+> **为什么广播包里放 16 位 UUID？**
+>
+> Web Bluetooth 的 `requestDevice({filters:[{services:[...]}]})` 在
+> Chrome/Edge 上**只解析广播包，不解析 scan response**。128 位 UUID
+> 占 18 字节，与设备名一起会超出 31 字节上限，只能放 scan response，
+> 于是浏览器按服务过滤时找不到设备（手机系统蓝牙会读 scan response，
+> 所以能搜到）。
+>
+> 因此广播包里额外放一个 16 位 UUID `0xFFE0` 供浏览器过滤；实际
+> GATT 服务仍是上面的 128 位 UUID。前端 `filters` 同时匹配
+> `0xFFE0` 与设备名前缀 `Butterfly-LED`，双保险。
+
 ### 分片协议
 
 BLE 单包受 MTU 限制（默认 20 字节，协商后最大 244），因此命令按

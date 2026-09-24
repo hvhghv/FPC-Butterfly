@@ -78,6 +78,23 @@ static const ble_uuid128_t s_svc_uuid = BLE_UUID128_INIT(
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x44,
     0x45, 0x4c, 0x01, 0x00, 0x70, 0x6f, 0x6f, 0x6c);
 
+/*
+ * 广播用 16 位服务 UUID。
+ *
+ * 为什么需要它:
+ *   Web Bluetooth 的 requestDevice({filters:[{services:[...]}]}) 在
+ *   Chrome/Edge 上**只解析广播包 (ADV_IND)，不解析 scan response**。
+ *   而 128 位 UUID 占 18 字节，放进广播包会与设备名一起超出 31 字节
+ *   上限，只能放到 scan response —— 于是浏览器按服务过滤时找不到设备
+ *   (手机系统蓝牙因为会读 scan response，所以能搜到)。
+ *
+ *   16 位 UUID 只占 4 字节，放进广播包后总长 3(flags) + 15(name) + 4 = 22
+ *   字节，不超限。浏览器即可按此 16 位 UUID 过滤到设备。
+ *
+ * 该 16 位 UUID 仅用于广播过滤；实际 GATT 服务仍是上面的 128 位 UUID。
+ */
+static const ble_uuid16_t s_svc_uuid16 = BLE_UUID16_INIT(0xFFE0);
+
 /* RX 特征 (写): 6c6f6f70-0002-... */
 static const ble_uuid128_t s_rx_uuid = BLE_UUID128_INIT(
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x44,
@@ -530,16 +547,20 @@ static void ble_advertise(void)
      * 广播数据 (legacy ADV_IND，上限 31 字节):
      *   - flags: 通用可发现 + 仅 BLE        (3 字节)
      *   - 完整设备名 "Butterfly-LED"        (15 字节)
-     * 合计 18 字节，留有余量。
+     *   - 16 位服务 UUID 0xFFE0             (4 字节)
+     * 合计 22 字节，不超限。
      *
-     * 注意: 128 位服务 UUID (18 字节) 若也放进广播数据会超出 31 字节上限，
-     *       导致 ble_gap_adv_set_fields() 返回 BLE_HS_EMSGSIZE (rc=4)、
-     *       广播无法启动。因此把它放到 scan response 里。
+     * 16 位 UUID 必须放在**广播包**里 (而非 scan response)，否则
+     * Web Bluetooth 的 filters.services 匹配不到设备，浏览器就搜不到。
+     * 详见 s_svc_uuid16 的注释。
      */
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t *)APP_BLE_DEVICE_NAME;
     fields.name_len = strlen(APP_BLE_DEVICE_NAME);
     fields.name_is_complete = 1;
+    fields.uuids16 = &s_svc_uuid16;
+    fields.num_uuids16 = 1;
+    fields.uuids16_is_complete = 1;
 
     rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
@@ -550,7 +571,7 @@ static void ble_advertise(void)
     /*
      * Scan response 数据 (上限 31 字节):
      *   - 128 位服务 UUID (18 字节)
-     * 主动扫描时客户端可据此按服务过滤，不影响连接。
+     * 手机系统蓝牙扫描时可据此按服务识别，不影响连接。
      */
     memset(&rsp_fields, 0, sizeof(rsp_fields));
 

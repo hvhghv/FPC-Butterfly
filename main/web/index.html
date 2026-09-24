@@ -790,6 +790,11 @@ const CMD_MAP={
 const BLE_SVC='6c6f6f70-0001-4c45-4400-000000000000';
 const BLE_RX ='6c6f6f70-0002-4c45-4400-000000000000';
 const BLE_TX ='6c6f6f70-0003-4c45-4400-000000000000';
+/* 广播用 16 位服务 UUID (与固件 s_svc_uuid16 一致)。
+   浏览器 filters.services 只解析广播包，不解析 scan response，
+   因此必须用这个 16 位 UUID 过滤，否则搜不到设备。 */
+const BLE_ADV_SVC=0xFFE0;
+const BLE_NAME_PREFIX='Butterfly-LED';
 let bleDev=null, bleRx=null, bleTx=null;
 let bleRxBuf=[], bleRxLen=0, bleRxGot=0;
 let bleWaiters=[];
@@ -813,8 +818,15 @@ async function bleConnect(){
 if(!navigator.bluetooth){log('浏览器不支持 Web Bluetooth',true);return;}
 try{
 log('正在扫描蓝牙设备...');
+/* 过滤条件: 16 位广播 UUID 或设备名前缀，任一匹配即可。
+   二者都在广播包里，浏览器能解析到，避免只按 128 位服务 UUID
+   (在 scan response 里) 过滤导致搜不到设备。 */
 bleDev=await navigator.bluetooth.requestDevice({
-filters:[{services:[BLE_SVC]}],optionalServices:[BLE_SVC]});
+filters:[
+{services:[BLE_ADV_SVC]},
+{namePrefix:BLE_NAME_PREFIX}
+],
+optionalServices:[BLE_SVC]});
 bleDev.addEventListener('gattserverdisconnected',()=>{
 log('蓝牙连接已断开',true);
 document.getElementById('blestat').textContent='未连接';
