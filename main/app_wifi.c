@@ -395,6 +395,7 @@ static esp_err_t save_cfg_to_nvs(const app_wifi_cfg_t *cfg)
 
 /* 前置声明: 定义在后面，但 apply_cfg_live() 与启动流程都要用 */
 static esp_err_t apply_sta_ip_mode(const app_wifi_cfg_t *cfg);
+static esp_err_t apply_ap_ip_mode(const app_wifi_cfg_t *cfg);
 
 /**
  * @brief 确保 s_cfg 已加载 (首次调用时从 NVS 读取)
@@ -629,19 +630,13 @@ static esp_err_t apply_cfg_live(const app_wifi_cfg_t *cfg)
             return err;
         }
 
-        /* 更新 AP 自身 IP (网段变化时 DHCP 池也要跟着变) */
-        esp_netif_ip_info_t ip_info = {0};
-        uint32_t ip = parse_ipv4(cfg->ip);
-        ip_info.ip.addr      = htonl(ip);
-        ip_info.gw.addr      = htonl(ip);
-        ip_info.netmask.addr = htonl(0x00FFFFFF);   /* 255.255.255.0 */
-
-        esp_netif_dhcps_stop(s_ap_netif);
-        err = esp_netif_set_ip_info(s_ap_netif, &ip_info);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "设置 AP IP 失败: %s", esp_err_to_name(err));
-        }
-        esp_netif_dhcps_start(s_ap_netif);
+        /*
+         * 更新 AP 自身 IP (网段变化时 DHCP 池也要跟着变)。
+         *
+         * 此处是热更新路径，WiFi 已启动、网卡已就绪，
+         * 因此可以直接应用 IP 与 DHCP 服务器。
+         */
+        apply_ap_ip_mode(cfg);
 
         snprintf(s_ssid, sizeof(s_ssid), "%s", cfg->ssid);
         snprintf(s_ip, sizeof(s_ip), "%s", cfg->ip);
@@ -962,6 +957,59 @@ static esp_err_t apply_sta_ip_mode(const app_wifi_cfg_t *cfg)
     return ESP_OK;
 }
 
+/**
+ * @brief 应用 AP 的静态 IP 与 DHCP 服务器
+ *
+ * **必须在 esp_wifi_start() 之后调用**。
+ *
+ * 原因: esp_wifi_start() 会重新初始化 AP 网卡。若在此之前启停 DHCP
+ * 服务器，网卡的子网掩码会被清空，导致:
+ *
+ *   dhcps: Illegal subnet mask.
+ *   esp_netif_lwip: DHCP server cannot be started
+ *
+ * 客户端连上 AP 后拿不到 IP。
+ *
+ * @param cfg 配置
+ * @return ESP_OK 成功
+ */
+static esp_err_t apply_ap_ip_mode(const app_wifi_cfg_t *cfg)
+{
+    if (s_ap_netif == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint32_t ip = parse_ipv4(cfg->ip);
+    if (ip == 0) {
+        return ESP_OK;
+    }
+
+    esp_netif_ip_info_t ip_info = {0};
+    ip_info.ip.addr      = htonl(ip);
+    ip_info.gw.addr      = htonl(ip);
+    ip_info.netmask.addr = htonl(0x00FFFFFF);   /* 255.255.255.0 */
+
+    /* 必须先停 DHCP 服务器，否则 set_ip_info 会被拒绝 */
+    esp_netif_dhcps_stop(s_ap_netif);
+
+    esp_err_t err = esp_netif_set_ip_info(s_ap_netif, &ip_info);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "设置 AP IP 失败: %s", esp_err_to_name(err));
+        /* 仍尝试恢复 DHCP 服务器，避免客户端完全无法获取 IP */
+        esp_netif_dhcps_start(s_ap_netif);
+        return err;
+    }
+
+    err = esp_netif_dhcps_start(s_ap_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+        ESP_LOGW(TAG, "启动 AP DHCP 服务器失败: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "AP 地址已应用: %s/255.255.255.0", cfg->ip);
+    return ESP_OK;
+}
+
 /* -------------------------------------------------------------------------- */
 /* 启动 / 停止                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -1054,22 +1102,19 @@ static esp_err_t wifi_start_internal(bool wait_ready)
     }
 
     /* --- AP 静态 IP --- */
-    if (use_ap) {
-        uint32_t ip = parse_ipv4(s_cfg.ip);
-        if (ip != 0) {
-            esp_netif_ip_info_t ip_info = {0};
-            ip_info.ip.addr      = htonl(ip);
-            ip_info.gw.addr      = htonl(ip);
-            ip_info.netmask.addr = htonl(0x00FFFFFF);
-
-            esp_netif_dhcps_stop(s_ap_netif);
-            err = esp_netif_set_ip_info(s_ap_netif, &ip_info);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "设置 AP IP 失败: %s", esp_err_to_name(err));
-            }
-            esp_netif_dhcps_start(s_ap_netif);
-        }
-    }
+    /*
+     * 注意: 这里**不**配置 AP IP，也不启停 DHCP 服务器。
+     *
+     * 原因: 此时 esp_wifi_start() 尚未调用，AP 网卡底层还没就绪。
+     * 若此刻 esp_netif_dhcps_start()，随后 esp_wifi_start() 会重新
+     * 初始化 AP 网卡，导致 DHCP 服务器的子网掩码被清空，启动时报:
+     *
+     *   dhcps: Illegal subnet mask.
+     *   esp_netif_lwip: DHCP server cannot be started
+     *
+     * 结果客户端连上 AP 后拿不到 IP。因此 AP IP 与 DHCP 的配置统一
+     * 放到 esp_wifi_start() 之后（见下面的 apply_ap_ip_mode()）。
+     */
 
     /* --- WiFi 初始化 --- */
     wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -1210,6 +1255,16 @@ static esp_err_t wifi_start_internal(bool wait_ready)
      */
     if (use_sta) {
         apply_sta_ip_mode(&s_cfg);
+    }
+
+    /*
+     * 应用 AP 的静态 IP 与 DHCP 服务器。
+     *
+     * 同样必须在 esp_wifi_start() 之后 —— 否则 AP 网卡的子网掩码
+     * 会被重新初始化清空，DHCP 服务器启动失败 (Illegal subnet mask)。
+     */
+    if (use_ap) {
+        apply_ap_ip_mode(&s_cfg);
     }
 
     static const char *mode_names[] = { "AP", "STA", "APSTA" };

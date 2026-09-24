@@ -521,31 +521,49 @@ static void ble_advertise(void)
 {
     struct ble_gap_adv_params adv_params;
     struct ble_hs_adv_fields fields;
+    struct ble_hs_adv_fields rsp_fields;
     int rc;
 
     memset(&fields, 0, sizeof(fields));
 
     /*
-     * 广播内容:
-     *   - flags: 通用可发现 + 仅 BLE
-     *   - 完整设备名
-     *   - 128 位服务 UUID (便于客户端按服务过滤)
+     * 广播数据 (legacy ADV_IND，上限 31 字节):
+     *   - flags: 通用可发现 + 仅 BLE        (3 字节)
+     *   - 完整设备名 "Butterfly-LED"        (15 字节)
+     * 合计 18 字节，留有余量。
+     *
+     * 注意: 128 位服务 UUID (18 字节) 若也放进广播数据会超出 31 字节上限，
+     *       导致 ble_gap_adv_set_fields() 返回 BLE_HS_EMSGSIZE (rc=4)、
+     *       广播无法启动。因此把它放到 scan response 里。
      */
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t *)APP_BLE_DEVICE_NAME;
     fields.name_len = strlen(APP_BLE_DEVICE_NAME);
     fields.name_is_complete = 1;
 
-    static ble_uuid_any_t svc_uuid_adv;
-    ble_uuid_copy(&svc_uuid_adv, &s_svc_uuid.u);
-    fields.uuids128 = &svc_uuid_adv.u128;
-    fields.num_uuids128 = 1;
-    fields.uuids128_is_complete = 1;
-
     rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "设置广播数据失败: rc=%d", rc);
         return;
+    }
+
+    /*
+     * Scan response 数据 (上限 31 字节):
+     *   - 128 位服务 UUID (18 字节)
+     * 主动扫描时客户端可据此按服务过滤，不影响连接。
+     */
+    memset(&rsp_fields, 0, sizeof(rsp_fields));
+
+    static ble_uuid_any_t svc_uuid_adv;
+    ble_uuid_copy(&svc_uuid_adv, &s_svc_uuid.u);
+    rsp_fields.uuids128 = &svc_uuid_adv.u128;
+    rsp_fields.num_uuids128 = 1;
+    rsp_fields.uuids128_is_complete = 1;
+
+    rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
+    if (rc != 0) {
+        /* scan response 失败不影响广播本身，仅告警 */
+        ESP_LOGW(TAG, "设置扫描响应数据失败: rc=%d", rc);
     }
 
     memset(&adv_params, 0, sizeof(adv_params));

@@ -23,3 +23,8 @@ _site/
 # 含密码的配置导出文件 (config.export 带 secrets 时生成)
 *with-secrets*.json
 backup*.json
+
+# --- 本地构建临时文件 -----------------------------------------------------
+_e.log
+_b.log
+_x.txt
