@@ -151,17 +151,18 @@ jobs:
       # -----------------------------------------------------------------------
       # 准备发布目录
       #
-      # 把产物集中到 dist/，并生成校验和。
+      # 只发布**单一烧录文件** —— IAP 与 esptool 都是从 0x140000 整段写入，
+      # 语义一致，因此不需要单独提供纯应用镜像。
+      #
       # HTML 页面改名为 index.html 便于直接部署。
       # -----------------------------------------------------------------------
       - name: Prepare dist
         run: |
           mkdir -p dist
           cp led_butterfly_flash.bin dist/
-          cp build/led_butterfly.bin dist/
           cp main/web/index.html dist/
           cd dist
-          sha256sum led_butterfly_flash.bin led_butterfly.bin index.html > SHA256SUMS.txt
+          sha256sum led_butterfly_flash.bin index.html > SHA256SUMS.txt
           echo "--- dist ---"
           ls -la
           echo "--- SHA256SUMS.txt ---"
@@ -185,7 +186,6 @@ jobs:
           generate_release_notes: true
           files: |
             dist/led_butterfly_flash.bin
-            dist/led_butterfly.bin
             dist/index.html
             dist/SHA256SUMS.txt
           body: |
@@ -193,10 +193,27 @@ jobs:
 
             | 文件 | 用途 |
             |------|------|
-            | `led_butterfly_flash.bin` | **推荐**。从 `0x140000` 起的单一烧录文件，含分区表 B + 应用镜像 |
-            | `led_butterfly.bin` | 纯应用镜像，供 IAP 直接发送 |
+            | `led_butterfly_flash.bin` | **烧录文件**。从 `0x140000` 起，含分区表 B + 应用镜像 |
             | `index.html` | Web 控制页面（可本地打开或用蓝牙连接） |
             | `SHA256SUMS.txt` | 校验和 |
+
+            ### 烧录方式
+
+            **通过 IAP**（推荐）：把 `led_butterfly_flash.bin` 发送给设备，
+            IAP 会整段写入 `0x140000`。
+
+            **用 esptool**：
+            ```bash
+            esptool.py --chip esp32c6 write_flash 0x140000 led_butterfly_flash.bin
+            ```
+
+            > 两种方式语义一致，都是从 `0x140000` 整段写入，因此只需这一个文件。
+
+            ### 校验
+
+            ```bash
+            sha256sum -c SHA256SUMS.txt
+            ```
 
             ### 烧录方式
 

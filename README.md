@@ -108,10 +108,15 @@ APP/
 
 | 文件 | 用途 |
 |------|------|
-| `led_butterfly_flash.bin` | **推荐**。从 `0x140000` 起的单一烧录文件 |
-| `led_butterfly.bin` | 纯应用镜像，供 IAP 直接发送 |
+| `led_butterfly_flash.bin` | **烧录文件**。从 `0x140000` 起，含分区表 B + 应用镜像 |
 | `index.html` | Web 控制页面 |
 | `SHA256SUMS.txt` | 校验和 |
+
+> **只有一个烧录文件** —— IAP 与 esptool 都是从 `0x140000` **整段写入**，
+> 语义一致，因此无需单独提供纯应用镜像。
+>
+> - IAP：把 `led_butterfly_flash.bin` 发送给设备，IAP 整段写入 `0x140000`
+> - esptool：`esptool.py --chip esp32c6 write_flash 0x140000 led_butterfly_flash.bin`
 
 **IDF 版本锁定 `v6.0.3`**，与本地开发环境一致。
 
@@ -177,29 +182,28 @@ idf.py build
 python build_user_app.py --target esp32c6 --name led_butterfly
 ```
 
-生成两个产物：
+生成**一个**烧录文件：
 
-| 产物 | 大小 | 内容 | 用途 |
-|------|------|------|------|
-| `build/led_butterfly.bin` | ~906 KB | 纯应用镜像（magic `0xE9`） | IAP 上传（UART/WiFi/浏览器） |
-| `build/led_butterfly_flash.bin` | ~970 KB | 分区表 B + 应用镜像 | **esptool 直接写 Flash** |
+| 产物 | 大小 | 内容 |
+|------|------|------|
+| `led_butterfly_flash.bin` | ~1.1 MB | 分区表 B + 应用镜像 |
 
 > 新版 IAP 不再使用自定义文件头，**不需要** `iap_pack.py` 打包。
-> 两个产物的区别只在**烧录目标地址**：
-> `led_butterfly.bin` 由 IAP 写入 `user_app` 分区（`0x150000`）；
-> `led_butterfly_flash.bin` 由 esptool 整段写入 `0x140000`。
+>
+> **IAP 与 esptool 都是从 `0x140000` 整段写入**，语义一致，
+> 因此只需这一个文件。IAP 收到后不做解析，直接整段写入。
 
 ### 3. 烧录
 
 | 通道 | 命令 |
 |------|------|
-| **UART** | `iap> xmodem recv` 然后发送 `build/led_butterfly.bin` |
-| **WiFi** | `curl -X POST --data-binary @build/led_butterfly.bin http://192.168.4.1/api/upload` |
+| **UART** | `iap> xmodem recv` 然后发送 `led_butterfly_flash.bin` |
+| **WiFi** | `curl -X POST --data-binary @led_butterfly_flash.bin http://192.168.4.1/api/upload` |
 | **浏览器** | 打开 `esp_iap_tool.html` → 「选择文件」→「烧录到设备」 |
-| **直接写 Flash** | `esptool.py write_flash 0x140000 build/led_butterfly_flash.bin` |
+| **直接写 Flash** | `esptool.py write_flash 0x140000 led_butterfly_flash.bin` |
 
-> 直接写 Flash 时烧 **`0x140000`**（分区表 B 起始）。
-> `led_butterfly_flash.bin` 是**合并镜像**，布局如下：
+> 所有方式都烧 **`0x140000`**（分区表 B 起始）。
+> `led_butterfly_flash.bin` 的布局如下：
 >
 > | 偏移 | 内容 |
 > |------|------|
@@ -840,7 +844,7 @@ IAP 在启动用户程序前，把 `iap_boot_param_t`（124 字节）写入 **RT
 ### 方式一：Web 页面
 
 控制页面点击「进入 IAP 下载模式」，设备重启后停留在 IAP，
-再用 IAP 页面（`http://192.168.4.1/`）上传新的 `led_butterfly.bin`。
+再用 IAP 页面（`http://192.168.4.1/`）上传新的 `led_butterfly_flash.bin`。
 
 ### 方式二：API
 
