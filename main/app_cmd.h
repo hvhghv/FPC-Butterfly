@@ -1,0 +1,99 @@
+/*
+ * 蝴蝶板灯控应用 — 命令层 (传输无关)
+ *
+ * 本模块把「控制命令」从传输层 (HTTP / BLE) 中解耦出来:
+ *
+ *     传输层                     命令层                业务层
+ *   ┌──────────┐            ┌─────────────┐       ┌──────────┐
+ *   │ HTTP     │──JSON────▶ │             │─────▶ │ led_ctrl │
+ *   │ BLE      │◀──JSON──── │ app_cmd     │ ◀──── │ app_wifi │
+ *   └──────────┘            └─────────────┘       └──────────┘
+ *
+ * 这样新增一种传输方式 (如 BLE) 时，只需把收到的 JSON 交给
+ * app_cmd_execute()，无需重复实现任何业务逻辑。
+ *
+ * 命令格式与 HTTP API 保持一致，便于前端复用同一套调用代码:
+ *
+ *   {"cmd":"led.set",  "id":0,"r":255,"g":0,"b":0}
+ *   {"cmd":"led.effect","id":0,"name":"breath","period":2000}
+ *   {"cmd":"status"}
+ *   {"cmd":"wifi.get"}
+ *   {"cmd":"config.export"}                    导出配置 (不含密码)
+ *   {"cmd":"config.export","secrets":1}        导出配置 (含密码明文)
+ *   {"cmd":"config.import", ...}               导入配置
+ *
+ * 响应统一为:
+ *   {"ok":true, ...}   或   {"ok":false,"error":"..."}
+ */
+
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include "esp_err.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * 命令响应缓冲区建议长度。
+ *
+ * status 与 config.export 响应最大 —— 后者含 4 颗灯珠 × 8 步序列
+ * 加 WiFi 配置，约 2.5KB，取 4KB 留足余量。
+ */
+#define APP_CMD_RESP_MAX    4096
+
+/**
+ * @brief 执行一条命令
+ *
+ * 解析 JSON 中的 "cmd" 字段并分发到对应处理函数，把响应 JSON
+ * 写入 out_buf。无论成功失败都会写入合法 JSON (失败时 ok=false)。
+ *
+ * 本函数线程安全 (内部各业务模块自带锁)，可从 HTTP 任务或 BLE
+ * 回调任务调用。
+ *
+ * @param[in]  json    请求 JSON 文本 (以 '\0' 结尾)
+ * @param[out] out_buf 响应缓冲区
+ * @param[in]  out_len 响应缓冲区长度
+ * @return ESP_OK 命令已执行 (响应可能是 ok=false)
+ *         ESP_ERR_INVALID_ARG 参数为 NULL
+ *         ESP_ERR_INVALID_SIZE 响应缓冲区不足
+ */
+esp_err_t app_cmd_execute(const char *json, char *out_buf, size_t out_len);
+
+/**
+ * @brief 从 JSON 文本中提取整数
+ *
+ * 极简解析器，只处理本项目用到的扁平 JSON:
+ *   {"r":255,"g":0,"b":0}
+ *
+ * 键名匹配使用 "\"key\"" 精确查找，避免 "r" 误匹配 "brightness"。
+ *
+ * @param[in]  json JSON 文本
+ * @param[in]  key  键名 (不含引号)
+ * @param[out] out  输出值
+ * @return true 找到并解析成功
+ */
+bool app_cmd_get_int(const char *json, const char *key, long *out);
+
+/**
+ * @brief 从 JSON 文本中提取字符串值
+ *
+ * @param[in]  json    JSON 文本
+ * @param[in]  key     键名 (不含引号)
+ * @param[out] out     输出缓冲区
+ * @param[in]  out_len 缓冲区长度
+ * @return true 找到并解析成功
+ */
+bool app_cmd_get_str(const char *json, const char *key,
+                     char *out, size_t out_len);
+
+/**
+ * @brief 把 long 值收敛到 [lo, hi]
+ */
+long app_cmd_clamp(long v, long lo, long hi);
+
+#ifdef __cplusplus
+}
+#endif

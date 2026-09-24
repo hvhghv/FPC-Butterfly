@@ -1,0 +1,202 @@
+# =============================================================================
+#  编译 ESP32-C6 固件并打包烧录文件
+# =============================================================================
+#
+#  产物:
+#    1. led_butterfly_flash.bin  从 0x140000 起的单一烧录文件
+#                                (分区表 B + 应用镜像，供 IAP 或 esptool 使用)
+#    2. led_butterfly.bin        纯应用镜像 (0xE9 头，供 IAP 直接发送)
+#    3. index.html               Web 控制页面 (单独产出，便于本地/Pages 使用)
+#    4. SHA256SUMS.txt           校验和
+#
+#  触发:
+#    - push 到 main
+#    - PR 到 main
+#    - 手动触发 (workflow_dispatch)
+#    - 打 tag (v*)，此时额外创建 GitHub Release
+#
+#  IDF 版本锁定 v6.0.3，与本地开发环境一致。
+# =============================================================================
+
+name: Build Firmware
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的重复触发只保留最新一次，避免排队浪费
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # 打 tag 时需要创建 Release
+
+jobs:
+  build:
+    name: Build (esp32c6)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # IDF 环境
+      #
+      # 用官方 Docker 镜像而非 espressif/esp-idf-ci-action —— 后者会自己
+      # 执行 idf.py build，无法插入"打包 + 校验"步骤。
+      # 这里只借镜像提供工具链，构建步骤完全由我们控制。
+      # -----------------------------------------------------------------------
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.0.3
+          target: esp32c6
+          # 只做构建，打包在后续步骤用 Python 脚本完成
+          command: idf.py build
+
+      # -----------------------------------------------------------------------
+      # 打包烧录文件
+      #
+      # build_user_app.py 是纯 Python 脚本，只读取 build/ 下的产物，
+      # 因此 --no-build 跳过重复编译。
+      # -----------------------------------------------------------------------
+      - name: Package flash image
+        run: |
+          python build_user_app.py --no-build --name led_butterfly
+
+      # -----------------------------------------------------------------------
+      # 校验产物
+      #
+      # 这一步很重要 —— 构建成功不代表产物正确。检查:
+      #   - 应用镜像首字节必须是 0xE9 (ESP 镜像 magic)
+      #   - 烧录文件大小应 >= 64KB (分区表到 user_app 的偏移)
+      #   - 烧录文件在 0x150000-0x140000 处应能读到镜像头
+      # -----------------------------------------------------------------------
+      - name: Verify artifacts
+        run: |
+          set -e
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+
+          VAR_BASE   = 0x140000
+          USER_ADDR  = 0x150000
+          app_off    = USER_ADDR - VAR_BASE
+
+          app = Path("build/led_butterfly.bin")
+          flash = Path("led_butterfly_flash.bin")
+
+          ok = True
+
+          # --- 应用镜像 ---
+          if not app.exists():
+              print(f"[FAIL] 缺少 {app}")
+              ok = False
+          else:
+              data = app.read_bytes()
+              if data[:1] != b"\xE9":
+                  print(f"[FAIL] {app} 首字节 {data[:1].hex()} != 0xe9")
+                  ok = False
+              else:
+                  print(f"[ OK ] {app.name}: {len(data)} 字节, 镜像头 0xE9")
+
+          # --- 烧录文件 ---
+          if not flash.exists():
+              print(f"[FAIL] 缺少 {flash}")
+              ok = False
+          else:
+              buf = flash.read_bytes()
+              if len(buf) < app_off:
+                  print(f"[FAIL] {flash} 过小: {len(buf)} < {app_off}")
+                  ok = False
+              elif buf[app_off:app_off+1] != b"\xE9":
+                  got = buf[app_off:app_off+1].hex()
+                  print(f"[FAIL] {flash} 在 0x150000 处无镜像头 (读到 {got})")
+                  ok = False
+              else:
+                  print(f"[ OK ] {flash.name}: {len(buf)} 字节")
+                  print(f"         0x140000 分区表 B")
+                  print(f"         0x150000 应用镜像 (头 0xE9)")
+
+          # --- HTML 页面 ---
+          html = Path("main/web/index.html")
+          if not html.exists():
+              print(f"[FAIL] 缺少 {html}")
+              ok = False
+          else:
+              print(f"[ OK ] {html.name}: {html.stat().st_size} 字节")
+
+          sys.exit(0 if ok else 1)
+          PY
+
+      # -----------------------------------------------------------------------
+      # 准备发布目录
+      #
+      # 把产物集中到 dist/，并生成校验和。
+      # HTML 页面改名为 index.html 便于直接部署。
+      # -----------------------------------------------------------------------
+      - name: Prepare dist
+        run: |
+          mkdir -p dist
+          cp led_butterfly_flash.bin dist/
+          cp build/led_butterfly.bin dist/
+          cp main/web/index.html dist/
+          cd dist
+          sha256sum led_butterfly_flash.bin led_butterfly.bin index.html > SHA256SUMS.txt
+          echo "--- dist ---"
+          ls -la
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: led-butterfly-esp32c6
+          path: dist/
+          retention-days: 30
+
+      # -----------------------------------------------------------------------
+      # Release (仅 tag 触发)
+      # -----------------------------------------------------------------------
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/led_butterfly_flash.bin
+            dist/led_butterfly.bin
+            dist/index.html
+            dist/SHA256SUMS.txt
+          body: |
+            ## 烧录说明
+
+            | 文件 | 用途 |
+            |------|------|
+            | `led_butterfly_flash.bin` | **推荐**。从 `0x140000` 起的单一烧录文件，含分区表 B + 应用镜像 |
+            | `led_butterfly.bin` | 纯应用镜像，供 IAP 直接发送 |
+            | `index.html` | Web 控制页面（可本地打开或用蓝牙连接） |
+            | `SHA256SUMS.txt` | 校验和 |
+
+            ### 烧录方式
+
+            **通过 IAP**（推荐）：把 `led_butterfly_flash.bin` 发送给设备，
+            IAP 会整段写入 `0x140000`。
+
+            **用 esptool**：
+            ```bash
+            esptool.py --chip esp32c6 write_flash 0x140000 led_butterfly_flash.bin
+            ```
+
+            ### 校验
+
+            ```bash
+            sha256sum -c SHA256SUMS.txt
+            ```

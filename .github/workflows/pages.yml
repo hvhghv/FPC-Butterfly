@@ -1,0 +1,81 @@
+# =============================================================================
+#  部署 Web 控制页面到 GitHub Pages
+# =============================================================================
+#
+#  为什么需要 Pages:
+#
+#    Web Bluetooth API 只能在**安全上下文**中使用 (https 或 localhost)。
+#    设备自身提供的 http://192.168.4.1/ 页面**无法**调用蓝牙 ——
+#    浏览器会直接禁用该 API。
+#
+#    部署到 GitHub Pages 后页面是 https，手机/电脑打开即可用蓝牙直连设备，
+#    且无需与设备在同一网络。
+#
+#  触发:
+#    - main/web/ 下的文件变更
+#    - 手动触发
+#
+#  前置设置 (只需做一次):
+#    Settings → Pages → Source 选择 "GitHub Actions"
+# =============================================================================
+
+name: Deploy Web UI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'main/web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy to Pages
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 准备站点目录
+      #
+      # 只发布 index.html —— 不把源码或构建产物混进去，
+      # 保持 Pages 站点干净且体积最小。
+      # -----------------------------------------------------------------------
+      - name: Prepare site
+        run: |
+          mkdir -p _site
+          cp main/web/index.html _site/index.html
+
+          # 加一个 .nojekyll，避免 Jekyll 处理下划线开头的文件
+          touch _site/.nojekyll
+
+          echo "--- _site ---"
+          ls -la _site
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

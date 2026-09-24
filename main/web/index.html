@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>蝴蝶板灯珠控制</title>
+<style>
+:root{--bg:#0f1115;--card:#161a22;--line:#232936;--fg:#e6e6e6;--dim:#8a93a5;--acc:#2a6df4;--ok:#2ecc71;--warn:#e67e22}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;margin:0;background:var(--bg);color:var(--fg);line-height:1.6}
+.wrap{max-width:960px;margin:0 auto;padding:18px}
+h1{font-size:21px;border-bottom:2px solid var(--acc);padding-bottom:8px;margin:0 0 4px}
+.sub{color:var(--dim);font-size:13px;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-top:12px}
+.card h2{font-size:15px;color:#8ab4ff;margin:0 0 10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.led{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:#12161d}
+.led.off{opacity:.55}
+.led .hd{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.led .nm{font-weight:600;font-size:14px}
+.led .ps{font-size:11px;color:var(--dim)}
+.row{display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px}
+.row label{width:20px;color:var(--dim);font-weight:600}
+/*
+ * .sw 是「复选框 + 文字」的组合标签，必须覆盖 .row label 的固定宽度，
+ * 否则会被压成 20px 导致文字逐字换行。
+ */
+.row label.sw,.sw{width:auto;min-width:0;flex:none;white-space:nowrap;
+font-weight:400;color:var(--dim)}
+.row input[type=range]{flex:1;min-width:0}
+.row .val{width:34px;text-align:right;font-variant-numeric:tabular-nums;color:var(--dim)}
+.adv{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line)}
+/*
+ * 表单行: 标签列固定宽度，输入列撑满。
+ *
+ * 用 grid 而非 flex —— 同一容器内所有行的标签列自动等宽，
+ * 不需要为每个标签手写 width，也不会因标签字数不同而错位。
+ */
+.frow{display:grid;grid-template-columns:56px 1fr;align-items:center;
+gap:8px;margin:6px 0;font-size:13px}
+.frow>label{color:var(--dim);font-weight:600;white-space:nowrap}
+.frow>input,.frow>select{width:100%;min-width:0}
+/* 一行放多个控件时用这个: 标签+控件 重复 */
+.frow2{display:grid;grid-template-columns:56px 1fr 64px 1fr;align-items:center;
+gap:8px;margin:6px 0;font-size:13px}
+.frow2>label{color:var(--dim);font-weight:600;white-space:nowrap}
+.frow2>input,.frow2>select{width:100%;min-width:0}
+/* 行尾的说明文字 */
+.fnote{font-size:11px;color:var(--dim);white-space:nowrap}
+.adv .row label{width:auto;min-width:34px}
+.adv select,.adv input[type=number]{flex:1;min-width:0}
+.sw{display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;user-select:none}
+.sw input{width:auto;flex:none;cursor:pointer}
+.seq{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line)}
+.seq .sh{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--dim);margin-bottom:6px}
+.step{display:flex;align-items:center;gap:5px;margin:4px 0;font-size:12px}
+.step .no{width:14px;color:var(--dim);text-align:right;flex:none}
+.step select{flex:1;min-width:0;padding:3px 5px;font-size:12px}
+.step input{width:58px;flex:none;padding:3px 5px;font-size:12px}
+.step .x{background:#39404f;color:var(--fg);border:0;border-radius:4px;width:20px;height:20px;
+line-height:1;padding:0;font-size:13px;cursor:pointer;flex:none;margin:0}
+.step .x:hover{background:#c0392b}
+.sbtns{display:flex;gap:6px;margin-top:7px}
+.sbtns button{flex:1;padding:5px 8px;font-size:12px;margin:0}
+.seq .hint{font-size:11px;color:var(--dim);margin-top:5px}
+input[type=color]{width:44px;height:28px;border:1px solid var(--line);border-radius:4px;background:#0f1115;padding:2px;cursor:pointer}
+button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;margin:3px 5px 3px 0}
+button:hover{background:#3d7ef8}
+button.gray{background:#39404f}
+button.gray:hover{background:#4a5364}
+button.danger{background:#c0392b}
+button.danger:hover{background:#e04b3a}
+/*
+ * 统一的输入控件外观。
+ *
+ * 必须把 text / number / select 都列进来 —— 只写 number 会导致
+ * text 输入框沿用浏览器默认的白色背景，与深色主题格格不入。
+ */
+select,input[type=text],input[type=number],input[type=password],textarea{
+background:#0f1115;color:var(--fg);border:1px solid var(--line);
+border-radius:6px;padding:6px 8px;font-size:13px;font-family:inherit}
+select:focus,input[type=text]:focus,input[type=number]:focus,
+input[type=password]:focus,textarea:focus{outline:none;border-color:var(--acc)}
+input:disabled,select:disabled{opacity:.45;cursor:not-allowed}
+/* 文本类输入框默认撑满行，保证同一列宽度一致 */
+.row input[type=text],.row input[type=password]{flex:1;min-width:0}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+td,th{border:1px solid var(--line);padding:5px 9px;text-align:left}
+th{background:#1a1f2b;width:36%;font-weight:600}
+#log{background:#0a0c10;border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;height:120px;overflow:auto;white-space:pre-wrap;color:#9fb3c8}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:middle}
+.dot.err{background:#e74c3c}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>蝴蝶板灯珠控制</h1>
+<div class="sub"><span class="dot" id="dot"></span><span id="netinfo">连接中...</span></div>
+
+<div class="card">
+<h2>灯珠颜色与高级控制</h2>
+<div class="grid" id="leds"></div>
+<div style="margin-top:10px">
+<button onclick="setAll()">全部同步为 D1 颜色</button>
+<button class="gray" onclick="preset(255,0,0)">全红</button>
+<button class="gray" onclick="preset(0,255,0)">全绿</button>
+<button class="gray" onclick="preset(0,0,255)">全蓝</button>
+<button class="gray" onclick="preset(255,255,255)">全白</button>
+<button class="danger" onclick="allOff()">全部熄灭</button>
+</div>
+</div>
+
+<div class="card">
+<h2>一键同步 (应用到全部灯珠)</h2>
+<div class="row"><label>亮度</label><input type="range" id="bri" min="0" max="255" value="255" oninput="briV()" onchange="setBrightness()"><span class="val" id="briV">255</span></div>
+<div class="row"><label>效果</label><select id="eff" onchange="setEffect()">
+<option value="none">静态 (无效果)</option>
+<option value="breath">呼吸</option>
+<option value="blink">闪烁</option>
+<option value="rainbow">彩虹</option>
+<option value="chase">流水</option>
+</select>
+<label style="width:auto;margin-left:8px">周期</label><input type="number" id="per" min="100" max="60000" step="100" value="2000" style="width:88px" onchange="setEffect()">
+<span style="font-size:12px;color:var(--dim)">ms</span></div>
+<div class="row"><label>PWM</label><input type="number" id="frq" min="100" max="40000" step="100" value="5000" style="width:96px" onchange="setFreq()">
+<span style="font-size:12px;color:var(--dim)">Hz (100-40000，硬件共享)</span></div>
+</div>
+
+<div class="card">
+<h2>连接方式</h2>
+<div class="row"><label>通道</label>
+<select id="chan" onchange="onChanChange()">
+<option value="http">WiFi (HTTP)</option>
+<option value="ble">蓝牙 (BLE)</option>
+</select>
+<span class="ps" id="chantip"></span></div>
+<div id="blebox" style="display:none">
+<div class="row"><label>设备</label><span class="ps" id="blestat">未连接</span></div>
+<div style="margin-top:6px">
+<button onclick="bleConnect()">连接蓝牙</button>
+<button class="gray" onclick="bleDisconnect()">断开</button>
+</div>
+<div class="hint" style="font-size:11px;color:var(--dim);margin-top:6px">
+需 Chrome / Edge / Opera，且页面须为 https 或 localhost。<br>
+iOS 与 Firefox 不支持 Web Bluetooth。</div>
+</div>
+</div>
+
+<div class="card">
+<h2>WiFi 设置</h2>
+<div class="frow"><label>模式</label><select id="wmode" onchange="onModeChange()">
+<option value="0">仅热点 (AP)</option>
+<option value="1">仅连路由器 (STA)</option>
+<option value="2">热点 + 连路由器 (APSTA)</option>
+</select></div>
+<div class="fnote" id="wmodetip" style="margin:-2px 0 6px 64px"></div>
+
+<div class="adv">
+<div class="sh" style="font-size:12px;color:var(--dim);margin-bottom:6px">热点 (AP)</div>
+<div class="frow"><label>名称</label><input type="text" id="wssid" maxlength="32" placeholder="ESP-LED"></div>
+<div class="frow"><label>密码</label><input type="text" id="wpass" maxlength="63" placeholder="留空 = 开放网络"></div>
+<div class="frow2"><label>信道</label><input type="number" id="wchan" min="1" max="13">
+<label>连接数</label><input type="number" id="wmax" min="1" max="10"></div>
+<div class="frow"><label>IP</label><input type="text" id="wip" placeholder="192.168.4.1"></div>
+<div class="fnote" style="margin:-2px 0 4px 64px">IP 须以 .1 结尾（如 192.168.4.1）</div>
+<div class="frow"><label>隐藏</label>
+<label class="sw"><input type="checkbox" id="whid"><span>不广播热点名称</span></label></div>
+</div>
+
+<div class="adv">
+<div class="sh" style="font-size:12px;color:var(--dim);margin-bottom:6px">
+路由器 (STA) <span id="wstastat"></span></div>
+<div class="frow"><label>名称</label>
+<div style="display:flex;gap:8px;min-width:0">
+<input type="text" id="wstassid" maxlength="32" placeholder="选择或输入路由器 SSID" style="flex:1;min-width:0">
+<button class="gray" onclick="scanWifi()" style="margin:0;padding:6px 12px;flex:none">扫描</button>
+</div></div>
+<div class="frow"><label>密码</label><input type="text" id="wstapass" maxlength="63" placeholder="留空 = 开放网络"></div>
+<div id="wscanbox" style="display:none;margin-top:6px">
+<div class="hint" style="font-size:11px;color:var(--dim);margin-bottom:4px">点击选择：</div>
+<div id="wscanlist" style="max-height:150px;overflow:auto"></div>
+</div>
+</div>
+
+<div style="margin-top:10px">
+<button onclick="saveWifi()">保存并应用</button>
+<button class="gray" onclick="loadWifi()">读取当前</button>
+<button class="gray" onclick="reconnectWifi()">重连路由器</button>
+<button class="danger" onclick="resetWifi()">恢复默认并重启</button>
+</div>
+<div class="hint" style="font-size:11px;color:var(--dim);margin-top:6px">
+修改名称/密码/信道/模式会断开当前连接，需用新参数重新连接。<br>
+保留热点 (APSTA) 可在连不上路由器时仍能访问本页面。</div>
+</div>
+
+<div class="card">
+<h2>配置导入 / 导出</h2>
+<div class="hint" style="font-size:12px;color:var(--dim);margin-bottom:8px">
+导出包含全部灯珠状态（颜色/亮度/效果/序列）与 WiFi 设置。</div>
+<label class="sw" style="margin-bottom:8px">
+<input type="checkbox" id="cfgsecrets" onchange="onSecretsChange()">
+<span>包含 WiFi 密码（完整迁移）</span></label>
+<div id="cfgsecretswarn" style="display:none;font-size:11px;color:#e67e22;
+background:#2a1f14;border:1px solid #5a3d1e;border-radius:6px;padding:7px 9px;margin-bottom:8px">
+⚠️ 导出的文件将包含 <b>WiFi 密码明文</b>，请妥善保管，不要分享或上传到公开位置。</div>
+<div style="margin-bottom:8px">
+<button onclick="exportCfg()">导出配置 (下载)</button>
+<button class="gray" onclick="showCfgText()">显示为文本</button>
+<button class="gray" onclick="document.getElementById('cfgfile').click()">从文件导入</button>
+<input type="file" id="cfgfile" accept=".json,application/json" style="display:none" onchange="importCfgFile(this)">
+</div>
+<textarea id="cfgtext" placeholder="在此粘贴配置 JSON，然后点「应用文本」"
+style="width:100%;height:110px;background:#0a0c10;color:#9fb3c8;border:1px solid var(--line);
+border-radius:6px;padding:8px;font-family:ui-monospace,Consolas,monospace;font-size:11px;
+resize:vertical;display:none"></textarea>
+<div id="cfgbtns" style="display:none;margin-top:6px">
+<button onclick="importCfgText()">应用文本</button>
+<button class="gray" onclick="hideCfgText()">收起</button>
+</div>
+</div>
+
+<div class="card">
+<h2>设备信息</h2>
+<table id="info"></table>
+<div style="margin-top:10px">
+<button class="gray" onclick="refresh()">刷新状态</button>
+<button class="gray" onclick="reboot()">重启设备</button>
+<button class="danger" onclick="upgrade()">进入 IAP 下载模式</button>
+</div>
+</div>
+
+<div class="card">
+<h2>日志</h2>
+<div id="log"></div>
+</div>
+</div>
+
+<script>
+const LEDS=[{id:1,name:'D1 左上翅膀',pos:'(17, 22) mm',gpio:'R=IO4 G=IO5 B=IO6'},
+{id:2,name:'D2 左下翅膀',pos:'(22, 39) mm',gpio:'R=IO0 G=IO1 B=IO7'},
+{id:3,name:'D3 右上翅膀',pos:'(53, 22) mm',gpio:'R=IO18 G=IO19 B=IO20'},
+{id:4,name:'D4 右下翅膀',pos:'(48, 39) mm',gpio:'R=IO21 G=IO22 B=IO23'}];
+
+function log(m,isErr){const el=document.getElementById('log');
+const t=new Date().toLocaleTimeString();
+el.textContent+='['+t+'] '+m+'\n';el.scrollTop=el.scrollHeight;
+document.getElementById('dot').className=isErr?'dot err':'dot';}
+
+function rgb2hex(r,g,b){return '#'+[r,g,b].map(v=>
+Math.max(0,Math.min(255,v|0)).toString(16).padStart(2,'0')).join('');}
+function hex2rgb(h){return [parseInt(h.substr(1,2),16),parseInt(h.substr(3,2),16),
+parseInt(h.substr(5,2),16)];}
+
+const EFFECTS=[['none','静态'],['breath','呼吸'],['blink','闪烁'],
+['rainbow','彩虹'],['chase','流水']];
+const MAX_STEPS=8;
+
+function buildLeds(){const box=document.getElementById('leds');
+box.innerHTML=LEDS.map(l=>`
+<div class="led" id="card${l.id}">
+<div class="hd"><span class="nm">${l.name}</span><span class="ps">${l.pos}</span></div>
+<div class="row"><label>R</label><input type="range" id="r${l.id}" min="0" max="255" value="0" oninput="sync(${l.id})"><span class="val" id="rv${l.id}">0</span></div>
+<div class="row"><label>G</label><input type="range" id="g${l.id}" min="0" max="255" value="0" oninput="sync(${l.id})"><span class="val" id="gv${l.id}">0</span></div>
+<div class="row"><label>B</label><input type="range" id="b${l.id}" min="0" max="255" value="0" oninput="sync(${l.id})"><span class="val" id="bv${l.id}">0</span></div>
+<div class="row"><input type="color" id="c${l.id}" value="#000000" oninput="pick(${l.id})"><span class="ps">${l.gpio}</span></div>
+<div class="adv">
+<div class="row"><label>亮度</label><input type="range" id="lb${l.id}" min="0" max="255" value="255" oninput="lbV(${l.id})" onchange="setLedBrightness(${l.id})"><span class="val" id="lbv${l.id}">255</span></div>
+<div class="row"><label>效果</label><select id="le${l.id}" onchange="setLedEffect(${l.id})">
+${EFFECTS.map(e=>`<option value="${e[0]}">${e[1]}</option>`).join('')}
+</select></div>
+<div class="row"><label>周期</label><input type="number" id="lp${l.id}" min="100" max="60000" step="100" value="2000" onchange="setLedEffect(${l.id})"><span style="font-size:11px;color:var(--dim)">ms</span></div>
+<div class="row"><label class="sw"><input type="checkbox" id="le${l.id}e" checked onchange="setLedEnable(${l.id})">启用</label></div>
+</div>
+<div class="seq">
+<div class="sh"><span>效果序列 (循环播放)</span><span class="ps" id="sqs${l.id}"></span></div>
+<div id="sq${l.id}"></div>
+<div class="sbtns">
+<button class="gray" onclick="addStep(${l.id})">+ 添加步骤</button>
+<button class="gray" onclick="applySeq(${l.id})">应用</button>
+<button class="gray" onclick="clearSeq(${l.id})">清空</button>
+</div>
+<div class="hint">例: 静态 1s → 闪烁 1s → 呼吸 1s，播完自动循环。序列非空时覆盖上方单效果。</div>
+</div>
+</div>`).join('');}
+
+function sync(id){const r=+document.getElementById('r'+id).value;
+const g=+document.getElementById('g'+id).value;
+const b=+document.getElementById('b'+id).value;
+document.getElementById('rv'+id).textContent=r;
+document.getElementById('gv'+id).textContent=g;
+document.getElementById('bv'+id).textContent=b;
+document.getElementById('c'+id).value=rgb2hex(r,g,b);
+post('/api/led',{id:id-1,r:r,g:g,b:b});}
+
+function pick(id){const [r,g,b]=hex2rgb(document.getElementById('c'+id).value);
+document.getElementById('r'+id).value=r;document.getElementById('g'+id).value=g;
+document.getElementById('b'+id).value=b;sync(id);}
+
+function setAll(){const r=+document.getElementById('r1').value;
+const g=+document.getElementById('g1').value;
+const b=+document.getElementById('b1').value;
+post('/api/all',{r:r,g:g,b:b}).then(()=>{LEDS.forEach(l=>{
+document.getElementById('r'+l.id).value=r;document.getElementById('g'+l.id).value=g;
+document.getElementById('b'+l.id).value=b;sync(l.id);});});}
+
+function preset(r,g,b){post('/api/all',{r:r,g:g,b:b}).then(()=>{LEDS.forEach(l=>{
+document.getElementById('r'+l.id).value=r;document.getElementById('g'+l.id).value=g;
+document.getElementById('b'+l.id).value=b;sync(l.id);});});}
+
+function allOff(){post('/api/off',{}).then(()=>{LEDS.forEach(l=>{
+document.getElementById('r'+l.id).value=0;document.getElementById('g'+l.id).value=0;
+document.getElementById('b'+l.id).value=0;sync(l.id);});});}
+
+function briV(){document.getElementById('briV').textContent=
+document.getElementById('bri').value;}
+function setBrightness(){post('/api/brightness',
+{value:+document.getElementById('bri').value});}
+function setEffect(){post('/api/effect',{name:document.getElementById('eff').value,
+period:+document.getElementById('per').value});}
+function setFreq(){post('/api/freq',{freq:+document.getElementById('frq').value});}
+
+/* --- 逐颗高级控制 --- */
+function lbV(id){document.getElementById('lbv'+id).textContent=
+document.getElementById('lb'+id).value;}
+function setLedBrightness(id){post('/api/led/brightness',
+{id:id-1,value:+document.getElementById('lb'+id).value});}
+function setLedEffect(id){post('/api/led/effect',{id:id-1,
+name:document.getElementById('le'+id).value,
+period:+document.getElementById('lp'+id).value});}
+function setLedEnable(id){
+post('/api/led/enable',{id:id-1,enabled:document.getElementById('le'+id+'e').checked});}
+
+/* --- 效果序列编辑 --- */
+function stepRow(id,k,eff,dur,per){
+return `<div class="step" data-k="${k}">
+<span class="no">${k+1}</span>
+<select class="se">${EFFECTS.map(e=>
+`<option value="${e[0]}"${e[0]===eff?' selected':''}>${e[1]}</option>`).join('')}</select>
+<input class="sd" type="number" min="10" max="600000" step="100" value="${dur}" title="时长 ms">
+<input class="sp" type="number" min="0" max="60000" step="100" value="${per}" title="周期 ms (0=与时长相同)">
+<button class="x" onclick="delStep(${id},${k})" title="删除">×</button>
+</div>`;}
+
+function addStep(id,eff,dur,per){
+const box=document.getElementById('sq'+id);
+const k=box.children.length;
+if(k>=MAX_STEPS){log('最多 '+MAX_STEPS+' 个步骤');return;}
+box.insertAdjacentHTML('beforeend',
+stepRow(id,k,eff||'none',dur||1000,per||0));}
+
+function delStep(id,k){
+const box=document.getElementById('sq'+id);
+if(box.children[k])box.children[k].remove();
+reindex(id);}
+
+function reindex(id){
+const box=document.getElementById('sq'+id);
+[...box.children].forEach((el,i)=>{
+el.dataset.k=i;
+el.querySelector('.no').textContent=i+1;
+el.querySelector('.x').setAttribute('onclick',`delStep(${id},${i})`);});}
+
+function readSteps(id){
+const box=document.getElementById('sq'+id);
+return [...box.children].map(el=>({
+effect:el.querySelector('.se').value,
+duration:+el.querySelector('.sd').value||1000,
+period:+el.querySelector('.sp').value||0}));}
+
+function applySeq(id){
+const steps=readSteps(id);
+if(!steps.length){clearSeq(id);return;}
+post('/api/led/sequence',{id:id-1,steps:steps})
+.then(r=>{if(r)log('D'+id+' 序列已应用 ('+steps.length+' 步)');});}
+
+function clearSeq(id){
+document.getElementById('sq'+id).innerHTML='';
+document.getElementById('sqs'+id).textContent='';
+post('/api/led/sequence',{id:id-1,steps:[]})
+.then(r=>{if(r)log('D'+id+' 序列已清空，回退到单效果');});}
+
+/* --- WiFi 设置 --- */
+let wifiPassSet=false;      /* 设备上 AP 是否已设密码 */
+let wifiStaPassSet=false;   /* 设备上 STA 是否已设密码 */
+
+/* 模式变化时更新提示与区域可用性 */
+function onModeChange(){
+const m=+document.getElementById('wmode').value;
+const tip=document.getElementById('wmodetip');
+const apOn=(m===0||m===2), staOn=(m===1||m===2);
+tip.textContent=m===1?'⚠️ 连不上路由器将无法访问页面':'';
+/* 未启用的区域置灰，避免误改 */
+['wssid','wpass','wchan','wmax','whid','wip'].forEach(id=>{
+const el=document.getElementById(id); if(el) el.disabled=!apOn;});
+['wstassid','wstapass'].forEach(id=>{
+const el=document.getElementById(id); if(el) el.disabled=!staOn;});}
+
+async function loadWifi(){
+const d=await getCmd('wifi.get');
+if(!d)return null;
+try{
+document.getElementById('wmode').value=d.mode!==undefined?d.mode:0;
+document.getElementById('wssid').value=d.ssid||'';
+document.getElementById('wchan').value=d.channel||1;
+document.getElementById('wmax').value=d.maxconn||4;
+document.getElementById('whid').checked=!!d.hidden;
+document.getElementById('wip').value=d.ip||'';
+/* 密码不回传，留空表示"不修改" */
+wifiPassSet=!!d.secure;
+document.getElementById('wpass').value='';
+document.getElementById('wpass').placeholder=
+wifiPassSet?'留空 = 不修改':'留空 = 开放网络';
+/* STA */
+const st=d.sta||{};
+document.getElementById('wstassid').value=st.ssid||'';
+wifiStaPassSet=!!st.secure;
+document.getElementById('wstapass').value='';
+document.getElementById('wstapass').placeholder=
+wifiStaPassSet?'留空 = 不修改':'留空 = 开放网络';
+const badge=document.getElementById('wstastat');
+if(!st.enabled){badge.textContent='(未启用)';}
+else if(st.connected){
+badge.textContent='已连接 '+st.ip+' 信号 '+st.rssi+' dBm';}
+else{badge.textContent='未连接';}
+onModeChange();
+return d;}
+catch(e){log('读取 WiFi 配置失败: '+e,true);return null;}}
+
+async function saveWifi(){
+const mode=+document.getElementById('wmode').value;
+const apOn=(mode===0||mode===2), staOn=(mode===1||mode===2);
+const obj={mode:mode};
+
+if(apOn){
+const ssid=document.getElementById('wssid').value.trim();
+if(!ssid){log('热点名称不能为空',true);return;}
+obj.ssid=ssid;
+obj.channel=+document.getElementById('wchan').value||1;
+obj.maxconn=+document.getElementById('wmax').value||4;
+obj.hidden=document.getElementById('whid').checked?1:0;
+obj.ip=document.getElementById('wip').value.trim()||'192.168.4.1';
+const pass=document.getElementById('wpass').value;
+if(pass===''&&wifiPassSet){log('热点密码留空，保持原密码不变');}
+if(pass!==''||!wifiPassSet){obj.password=pass;}}
+
+if(staOn){
+const s=document.getElementById('wstassid').value.trim();
+if(!s){log('启用 STA 时必须填写路由器名称',true);return;}
+obj.sta_ssid=s;
+const sp=document.getElementById('wstapass').value;
+if(sp===''&&wifiStaPassSet){log('路由器密码留空，保持原密码不变');}
+if(sp!==''||!wifiStaPassSet){obj.sta_password=sp;}}
+
+const r=await post('/api/wifi',obj);
+if(r){log('WiFi 已更新: 模式='+mode+' 热点='+(r.ssid||'-')+
+(staOn?' 路由器='+r.sta_ssid:''));}}
+
+async function scanWifi(){
+const box=document.getElementById('wscanbox');
+const list=document.getElementById('wscanlist');
+box.style.display='block';
+list.innerHTML='<div style="font-size:12px;color:var(--dim)">扫描中，约需 3 秒...</div>';
+const r=await post('/api/wifi/scan',{});
+if(!r){list.innerHTML='<div style="font-size:12px;color:#e74c3c">扫描失败</div>';return;}
+if(!r.aps||!r.aps.length){
+list.innerHTML='<div style="font-size:12px;color:var(--dim)">未发现热点</div>';return;}
+/* 按信号强度降序排列，方便选择 */
+const aps=[...r.aps].sort((a,b)=>b.rssi-a.rssi);
+list.innerHTML=aps.map(a=>`<div class="step" style="cursor:pointer" onclick="pickAp('${a.ssid.replace(/'/g,"\\'")}')">
+<span class="no">${a.rssi}</span>
+<span style="flex:1">${a.ssid}</span>
+<span class="ps">${a.secure?'🔒':'开放'} ch${a.channel}</span>
+</div>`).join('');
+log('扫描完成，发现 '+aps.length+' 个热点');}
+
+function pickAp(ssid){
+document.getElementById('wstassid').value=ssid;
+document.getElementById('wscanbox').style.display='none';
+log('已选择路由器: '+ssid);}
+
+async function reconnectWifi(){
+const r=await post('/api/wifi/reconnect',{});
+if(r)log('已触发路由器重连，稍后刷新查看状态');}
+
+async function resetWifi(){
+if(!confirm('确定恢复默认 WiFi 配置？\n\n设备将重启，热点变为 ESP-LED / 12345678。'))return;
+await post('/api/wifi/reset',{});
+log('已恢复默认配置，设备重启中...');}
+
+/* --- 配置导入 / 导出 --- */
+let cfgCache=null;   /* 最近一次导出的配置文本 */
+
+/* 勾选「包含密码」时显示警告 */
+function onSecretsChange(){
+const on=document.getElementById('cfgsecrets').checked;
+document.getElementById('cfgsecretswarn').style.display=on?'block':'none';}
+
+async function fetchCfg(){
+const secrets=document.getElementById('cfgsecrets').checked;
+/* 不勾选时不传参数，走 GET，便于 curl 直接调用同一路径 */
+const d=await getCmd('config.export',secrets?{secrets:1}:null);
+if(!d)return null;
+/* 去掉 ok 字段后作为可移植的配置内容 */
+const clean=Object.assign({},d);
+delete clean.ok;
+return JSON.stringify(clean,null,1);}
+
+async function exportCfg(){
+const secrets=document.getElementById('cfgsecrets').checked;
+if(secrets&&!confirm('导出的文件将包含 WiFi 密码明文。\n\n确定继续？'))return;
+const txt=await fetchCfg();
+if(!txt)return;
+cfgCache=txt;
+/* 用 Blob 触发下载，文件名带时间戳便于区分 */
+const ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+const a=document.createElement('a');
+a.href=URL.createObjectURL(new Blob([txt],{type:'application/json'}));
+a.download='butterfly-led-config-'+ts+(secrets?'-with-secrets':'')+'.json';
+a.click();
+URL.revokeObjectURL(a.href);
+log('配置已导出 ('+txt.length+' 字节'+(secrets?'，含密码':'')+')');}
+
+async function showCfgText(){
+const secrets=document.getElementById('cfgsecrets').checked;
+if(secrets&&!confirm('文本将包含 WiFi 密码明文。\n\n确定继续？'))return;
+const txt=await fetchCfg();
+if(!txt)return;
+cfgCache=txt;
+const ta=document.getElementById('cfgtext');
+ta.value=txt;
+ta.style.display='block';
+document.getElementById('cfgbtns').style.display='block';
+log('配置已显示，可复制保存'+(secrets?'（含密码）':''));}
+
+function hideCfgText(){
+document.getElementById('cfgtext').style.display='none';
+document.getElementById('cfgbtns').style.display='none';}
+
+async function applyCfg(txt,src){
+let obj;
+try{obj=JSON.parse(txt);}
+catch(e){log('配置格式错误: '+e.message,true);return;}
+if(typeof obj!=='object'||obj===null){log('配置必须是 JSON 对象',true);return;}
+
+/* 检测是否含密码明文，提示用户 */
+const w=obj.wifi||{};
+const hasPw=('password' in w)||('sta_password' in w);
+let msg='确定导入'+(src||'该')+'配置？\n\n将覆盖当前灯珠与 WiFi 设置。';
+if(hasPw){msg+='\n\n该配置含 WiFi 密码，将一并恢复。';}
+if(!confirm(msg))return;
+
+const r=await post('/api/config',obj);
+if(r){
+log('配置已导入: '+r.leds+' 颗灯珠'+(r.wifi?'，WiFi 已更新':'')+
+(r.passwords?'（含密码）':''));
+/* 立即刷新界面反映新配置 */
+await refresh();await loadWifi();}}
+
+async function importCfgFile(input){
+const f=input.files&&input.files[0];
+if(!f)return;
+try{
+const txt=await f.text();
+await applyCfg(txt,'文件「'+f.name+'」中的');
+}catch(e){log('读取文件失败: '+e,true);}
+/* 清空以便重复选择同一文件 */
+input.value='';}
+
+async function importCfgText(){
+const txt=document.getElementById('cfgtext').value.trim();
+if(!txt){log('文本框为空',true);return;}
+await applyCfg(txt,'文本中的');}
+
+/* ============================================================================
+ * 传输通道: WiFi(HTTP) / 蓝牙(BLE)
+ *
+ * 设备端两条通道共用同一套命令层，因此这里把 HTTP 路径映射成
+ * 命令名后统一发送:
+ *
+ *   POST /api/led  ->  {"cmd":"led.set", ...}
+ *
+ * BLE 侧用 Web Bluetooth 连接 GATT 服务，命令按「2 字节长度 + JSON」
+ * 分片写入 RX 特征，响应从 TX 特征的通知中拼回。
+ * ========================================================================== */
+
+let channel='http';          /* 'http' | 'ble' */
+
+/* HTTP 路径 -> 命令名 */
+const CMD_MAP={
+'/api/status':'status',
+'/api/led':'led.set',
+'/api/led/effect':'led.effect',
+'/api/led/brightness':'led.brightness',
+'/api/led/enable':'led.enable',
+'/api/led/sequence':'led.sequence',
+'/api/all':'all',
+'/api/brightness':'brightness',
+'/api/effect':'effect',
+'/api/off':'off',
+'/api/freq':'freq',
+'/api/reboot':'reboot',
+'/api/upgrade':'upgrade',
+'/api/wifi':'wifi.set',
+'/api/wifi/scan':'wifi.scan',
+'/api/wifi/reconnect':'wifi.reconnect',
+'/api/wifi/reset':'wifi.reset',
+'/api/config':'config.import',
+'/api/config/export':'config.export'};
+
+/* --- BLE 状态 --- */
+const BLE_SVC='6c6f6f70-0001-4c45-4400-000000000000';
+const BLE_RX ='6c6f6f70-0002-4c45-4400-000000000000';
+const BLE_TX ='6c6f6f70-0003-4c45-4400-000000000000';
+let bleDev=null, bleRx=null, bleTx=null;
+let bleRxBuf=[], bleRxLen=0, bleRxGot=0;
+let bleWaiters=[];
+
+function onChanChange(){
+channel=document.getElementById('chan').value;
+const tip=document.getElementById('chantip');
+document.getElementById('blebox').style.display=(channel==='ble')?'block':'none';
+if(channel==='ble'){
+if(!navigator.bluetooth){
+tip.textContent='⚠️ 当前浏览器不支持 Web Bluetooth';
+log('当前浏览器不支持 Web Bluetooth，请用 Chrome / Edge / Opera',true);
+}else{
+tip.textContent='蓝牙通道：需先连接设备';
+}}
+else{tip.textContent='';}
+log('已切换到 '+(channel==='ble'?'蓝牙':'WiFi')+' 通道');}
+
+/* --- BLE 连接 --- */
+async function bleConnect(){
+if(!navigator.bluetooth){log('浏览器不支持 Web Bluetooth',true);return;}
+try{
+log('正在扫描蓝牙设备...');
+bleDev=await navigator.bluetooth.requestDevice({
+filters:[{services:[BLE_SVC]}],optionalServices:[BLE_SVC]});
+bleDev.addEventListener('gattserverdisconnected',()=>{
+log('蓝牙连接已断开',true);
+document.getElementById('blestat').textContent='未连接';
+bleRx=bleTx=null;});
+const srv=await bleDev.gatt.connect();
+const svc=await srv.getPrimaryService(BLE_SVC);
+bleRx=await svc.getCharacteristic(BLE_RX);
+bleTx=await svc.getCharacteristic(BLE_TX);
+await bleTx.startNotifications();
+bleTx.addEventListener('characteristicvaluechanged',bleOnNotify);
+bleRxBuf=[];bleRxLen=0;bleRxGot=0;
+document.getElementById('blestat').textContent='已连接 '+(bleDev.name||'');
+log('蓝牙已连接: '+(bleDev.name||'设备'));
+/* 连上后立即拉一次状态 */
+refresh();}
+catch(e){log('蓝牙连接失败: '+e,true);}}
+
+async function bleDisconnect(){
+try{if(bleDev&&bleDev.gatt.connected)bleDev.gatt.disconnect();}catch(e){}
+bleDev=bleRx=bleTx=null;
+document.getElementById('blestat').textContent='未连接';
+log('蓝牙已断开');}
+
+/* --- BLE 收包: 累积分片直到收齐 --- */
+function bleOnNotify(e){
+const dv=e.target.value;
+const bytes=new Uint8Array(dv.buffer,dv.byteOffset,dv.byteLength);
+for(const b of bytes)bleRxBuf.push(b);
+/*
+ * 响应不带长度前缀，靠 JSON 结尾的 '}' 判断收齐。
+ * 命令层返回的响应一定是完整 JSON 对象，因此这个判据可靠。
+ */
+const txt=new TextDecoder().decode(new Uint8Array(bleRxBuf));
+if(txt.length>0&&txt[txt.length-1]==='}'){
+bleRxBuf=[];
+/* 唤醒最早的一个等待者 (FIFO，与请求顺序一致) */
+const w=bleWaiters.shift();
+if(w&&w.resolve)w.resolve(txt);}}
+
+/* --- BLE 发包: 2 字节长度前缀 + 分片 --- */
+async function bleSend(jsonStr){
+if(!bleRx)throw new Error('蓝牙未连接');
+const data=new TextEncoder().encode(jsonStr);
+const buf=new Uint8Array(data.length+2);
+buf[0]=data.length&0xFF;
+buf[1]=(data.length>>8)&0xFF;
+buf.set(data,2);
+const mtu=await bleRx.getMTU?0:0;   /* 浏览器不暴露 MTU，用保守值 */
+const chunk=180;
+for(let i=0;i<buf.length;i+=chunk){
+await bleRx.writeValueWithoutResponse(buf.slice(i,i+chunk));
+}}
+
+/* --- BLE 请求: 发送并等待响应 --- */
+function bleRequest(jsonStr){
+return new Promise((resolve,reject)=>{
+/*
+ * 超时后必须把等待者从队列里摘掉。
+ *
+ * 否则每次超时都会留下一个永远不会被调用的回调，后续响应会
+ * 唤醒这些陈旧等待者，导致「响应错位」—— 第 N 次请求收到的是
+ * 第 N-1 次的响应。
+ */
+const entry={resolve:null};
+const timer=setTimeout(()=>{
+const i=bleWaiters.indexOf(entry);
+if(i>=0)bleWaiters.splice(i,1);
+reject(new Error('蓝牙响应超时'));},8000);
+entry.resolve=t=>{clearTimeout(timer);resolve(t);};
+bleWaiters.push(entry);
+bleSend(jsonStr).catch(e=>{
+clearTimeout(timer);
+const i=bleWaiters.indexOf(entry);
+if(i>=0)bleWaiters.splice(i,1);
+reject(e);});});}
+
+/* --- 统一发送入口 --- */
+async function post(url,obj){
+const cmd=CMD_MAP[url];
+if(channel==='ble'){
+try{
+const req=Object.assign({cmd:cmd},obj||{});
+const resp=await bleRequest(JSON.stringify(req));
+const d=JSON.parse(resp);
+if(!d.ok){log(url+' -> '+d.error,true);return null;}
+log(url+' 成功 (BLE)');
+return d;}
+catch(e){log(url+' 失败: '+e,true);return null;}}
+/* --- HTTP 通道 --- */
+try{const r=await fetch(url,{method:'POST',
+headers:{'Content-Type':'application/json'},body:JSON.stringify(obj||{})});
+const t=await r.text();
+if(!r.ok){log(url+' -> '+r.status+' '+t,true);return null;}
+log(url+' 成功');return JSON.parse(t);}
+catch(e){log(url+' 失败: '+e,true);return null;}}
+
+/* --- GET 类请求 (status / wifi / config) 同样支持双通道 --- */
+async function getCmd(cmd,params){
+if(channel==='ble'){
+try{
+const req=Object.assign({cmd:cmd},params||{});
+const resp=await bleRequest(JSON.stringify(req));
+return JSON.parse(resp);}
+catch(e){log(cmd+' 失败: '+e,true);return null;}}
+const map={'status':'/api/status','wifi.get':'/api/wifi','config.export':'/api/config'};
+const url=map[cmd]||('/api/'+cmd.replace('.','/'));
+try{
+/*
+ * config.export 带参数时改用 POST /api/config/export。
+ * 无参数时仍用 GET，保持简单且可被 curl 直接调用。
+ */
+const usePost=(cmd==='config.export'&&params&&Object.keys(params).length);
+const r=usePost
+?await fetch('/api/config/export',{method:'POST',
+headers:{'Content-Type':'application/json'},body:JSON.stringify(params)})
+:await fetch(url);
+if(!r.ok)throw new Error('HTTP '+r.status);
+return await r.json();}
+catch(e){log(cmd+' 失败: '+e,true);return null;}}
+
+async function refresh(){
+const d=await getCmd('status');
+if(!d)return;
+try{
+document.getElementById('netinfo').textContent=
+'SSID '+d.ssid+'  地址 http://'+d.ip+'/  客户端 '+d.clients+' 个';
+document.getElementById('dot').className='dot';
+if(d.leds){d.leds.forEach(l=>{const i=l.id;
+document.getElementById('r'+i).value=l.r;document.getElementById('g'+i).value=l.g;
+document.getElementById('b'+i).value=l.b;document.getElementById('rv'+i).textContent=l.r;
+document.getElementById('gv'+i).textContent=l.g;document.getElementById('bv'+i).textContent=l.b;
+document.getElementById('c'+i).value=rgb2hex(l.r,l.g,l.b);
+/* 逐颗高级参数 */
+document.getElementById('lb'+i).value=l.brightness;
+document.getElementById('lbv'+i).textContent=l.brightness;
+document.getElementById('le'+i).value=l.effect;
+document.getElementById('lp'+i).value=l.period;
+document.getElementById('le'+i+'e').checked=!!l.enabled;
+document.getElementById('card'+i).className='led'+(l.enabled?'':' off');
+/* 效果序列: 仅在用户未编辑时回填，避免覆盖正在编辑的内容 */
+const sq=document.getElementById('sq'+i);
+if(!sq.matches(':focus-within')){
+sq.innerHTML='';(l.steps||[]).forEach((s,k)=>
+addStep(i,s.effect,s.duration,s.period));
+document.getElementById('sqs'+i).textContent=
+(l.steps&&l.steps.length)?(l.steps.length+' 步'):'未设置';}});}
+document.getElementById('bri').value=d.brightness;briV();
+document.getElementById('eff').value=d.effect;
+document.getElementById('per').value=d.period;
+document.getElementById('frq').value=d.freq;
+const rows=[['芯片',d.chip],['IDF 版本',d.idf],['程序版本',d.app],
+['MAC 地址',d.mac],['空闲堆',d.heap+' 字节'],['运行时间',d.uptime+' 秒'],
+['启动目标',d.boottarget],['IAP 版本',d.iapver],['AP SSID',d.ssid],
+['AP 地址',d.ip],['接入客户端',d.clients+' 个']];
+document.getElementById('info').innerHTML=rows.map(x=>
+'<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>').join('');}
+catch(e){log('刷新失败: '+e,true);
+document.getElementById('dot').className='dot err';}}
+
+function reboot(){if(!confirm('确定重启设备？'))return;
+post('/api/reboot',{});log('设备重启中，请稍后刷新');}
+function upgrade(){if(!confirm('确定重启进入 IAP 下载模式？\n\n'+
+'设备将重启并停留在 IAP，可用 IAP 页面重新烧录用户程序。'))return;
+post('/api/upgrade',{});log('正在进入 IAP 下载模式...');}
+
+buildLeds();refresh();loadWifi();setInterval(refresh,5000);
+
+</script>
+</body>
+</html>

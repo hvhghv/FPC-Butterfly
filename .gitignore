@@ -1,0 +1,15 @@
+.cache
+.vscode
+build
+__pycache__
+
+# --- 构建产物 -------------------------------------------------------------
+# build_user_app.py 的输出与 CI 中间目录
+*_flash.bin
+dist/
+_site/
+
+# --- 敏感文件 -------------------------------------------------------------
+# 含密码的配置导出文件 (config.export 带 secrets 时生成)
+*with-secrets*.json
+backup*.json

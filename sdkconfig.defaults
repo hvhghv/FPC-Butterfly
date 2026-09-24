@@ -1,0 +1,155 @@
+# ============================================================================
+# ESP IAP 用户程序 — 关键配置 (v5 双分区表架构)
+# ============================================================================
+# 这些配置必须与 IAP 程序保持一致，否则无法正常对接。
+# 详见 IAP/docs/FINAL-REPORT.md
+# ============================================================================
+
+# --- 分区表 ----------------------------------------------------------------
+# v5: 使用**分区表 B** (APP 专用: nvs + user_app)，位于 flash 0x140000。
+#     与 IAP 的分区表 A (0xB000) 是两份独立文件，互不重叠。
+#     ⚠️ 偏移必须为 0x140000，否则 bootloader 找不到分区表。
+#
+#     注意: NVS 分区名必须为 "nvs" (不能自定义) ——
+#     IDF 的 nvs_open() 硬编码 NVS_DEFAULT_PART_NAME = "nvs"，
+#     WiFi/BT 等组件依赖它。详见 main/main.c 的 NVS 初始化注释。
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_user_app.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x140000
+
+# --- 目标芯片 (按需修改，与 IAP 保持一致) ----------------------------------
+# CONFIG_IDF_TARGET="esp32c6"
+
+# --- Flash 大小 ------------------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# --- RTC 保留内存 (与 IAP / bootloader 保持一致) ----------------------------
+#
+# 用户程序通过 IDF 官方 rtc_retain_mem_t.custom[] 读取 IAP 写入的启动参数:
+#   rtc_retain_mem_t *mem = bootloader_common_get_rtc_retain_mem();
+#   iap_boot_param_t *p = (iap_boot_param_t *)mem->custom;
+#
+# ⚠️ 这两项**必须与 IAP 程序完全一致**，否则两侧对 custom[] 的
+#    偏移/CRC 计算不一致，读到的数据无效。
+CONFIG_BOOTLOADER_RESERVE_RTC_MEM=y
+CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC=y
+# >= sizeof(iap_boot_param_t) = 100 字节，4 字节对齐
+CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_SIZE=128
+
+# --- 应用入口 --------------------------------------------------------------
+# 用户程序作为普通应用运行，标准 app_main 入口即可。
+# 主任务需要完成 WiFi + HTTP + 灯珠初始化，栈适当放大。
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# --- 日志 ------------------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+
+# --- 关闭不必要的启动检查，加快启动 ----------------------------------------
+# 用户程序由 IAP 校验，无需 bootloader 再校验一次。
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=n
+
+# --- 编译器优化 ------------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# --- FreeRTOS --------------------------------------------------------------
+CONFIG_FREERTOS_HZ=1000
+
+# --- WiFi (SoftAP) ---------------------------------------------------------
+# 控制页面通过 SoftAP 访问，需要 AP 模式支持。
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_ENABLE_WIFI_RX_STATS=n
+
+# --- LWIP / DHCP 服务器 ----------------------------------------------------
+# SoftAP 需要 DHCP 服务器为客户端分配地址。
+CONFIG_LWIP_MAX_SOCKETS=10
+CONFIG_LWIP_DHCPS=y
+CONFIG_LWIP_DHCPS_LEASE_UNIT=60
+
+# --- HTTP 服务器 -----------------------------------------------------------
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+CONFIG_HTTPD_WS_SUPPORT=n
+
+# --- LEDC PWM (前 6 路) ----------------------------------------------------
+CONFIG_LEDC_CTRL_FUNC_IN_IRAM=n
+
+# --- MCPWM (后 6 路) -------------------------------------------------------
+# ESP32-C6 的 LEDC 只有 6 个通道，后 6 路改用 MCPWM 外设。
+# MCPWM 提供 3 操作器 x 2 比较器/生成器 = 6 路独立 PWM，
+# 与 LEDC 合计 12 路，全部为硬件 PWM，运行期 CPU 占用为 0。
+CONFIG_MCPWM_ENABLE_DEBUG_LOG=n
+
+# --- 蓝牙 BLE (NimBLE) -----------------------------------------------------
+#
+# 提供与 HTTP 等价的蓝牙控制通道，供浏览器 (Web Bluetooth) 直接连接。
+#
+# 选 NimBLE 而非 Bluedroid: 前者 DRAM 占用约少 30-50KB，
+# 对同时跑 WiFi + HTTP + 12 路 PWM 的场景更友好。
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+
+# 设备名 (运行时由 ble_svc_gap_device_name_set 覆盖，此处仅为默认值)
+CONFIG_BT_NIMBLE_SVC_GAP_DEVICE_NAME="Butterfly-LED"
+
+# --- BLE 角色裁剪 ----------------------------------------------------------
+# 本设备只做 GATT Server (外设)，不需要 Central/Observer/Broadcaster，
+# 关掉可省下可观的内存与代码空间。
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+
+# --- BLE 资源上限 ----------------------------------------------------------
+# 只服务单个客户端，按最小需求配置。
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_MAX_BONDS=1
+CONFIG_BT_NIMBLE_MAX_CCCDS=4
+
+# 主机任务栈: 命令执行已移到独立任务 (ble_cmd_task)，
+# 因此 host 任务只需处理协议栈本身，默认 4096 够用。
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096
+
+# --- BLE 缓冲 --------------------------------------------------------------
+# 响应最大约 3KB，需要足够的 mbuf 池来承载分片发送。
+CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=8
+CONFIG_BT_NIMBLE_ACL_BUF_SIZE=255
+
+# --- WiFi / BLE 射频共存 ---------------------------------------------------
+# 两者共用 2.4 GHz 射频，必须开启软件共存，否则会出现
+# BLE 连接不稳、WiFi 吞吐骤降等问题。
+CONFIG_SW_COEXIST_ENABLE=y
+
+# --- 日志 ------------------------------------------------------------------
+# BLE 协议栈日志很啰嗦，单独压低到 WARN，避免刷屏。
+CONFIG_BT_NIMBLE_LOG_LEVEL_NONE=y
+CONFIG_BT_NIMBLE_DEBUG=n
+
+# --- IRAM 占用控制 ---------------------------------------------------------
+#
+# 加入 BLE 后 IRAM 占用从 62.9% 升到 86.6%，余量偏紧。
+# 以下选项把非关键路径移出 IRAM，换回约 20KB 空间。
+#
+# 本项目无 ISR 参与灯控 (纯硬件 PWM)，也不在中断里调用 BLE，
+# 因此这些代码放在 flash 中执行即可 —— 代价仅是首次调用时
+# 有一次 cache miss，对控制类应用完全可接受。
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=n
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=n
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_DEFAULT=y
+
+# 关闭 BLE 控制器的 IRAM 优化 (省 IRAM，牺牲少量中断延迟)
+CONFIG_BT_CTRL_HCI_TL_EFF=n
+CONFIG_BT_CTRL_BLE_MAX_ACT=2
+
+# WiFi 侧同样收紧: 关闭 IRAM 优化
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+
