@@ -121,7 +121,22 @@ static const ble_uuid128_t s_tx_uuid = BLE_UUID128_INIT(
 /** 命令队列深度 */
 #define BLE_CMD_QUEUE_LEN   4
 
-/** 单条待执行命令 */
+/**
+ * 单条待执行命令。
+ *
+ * 注意: 队列里存的是**指针**而非结构体本身。
+ *
+ * 原因: 本结构含 4KB 的 json 缓冲区。GATT 写入回调
+ * (gatt_rx_access) 运行在 nimble_host 任务上，该任务栈只有
+ * 4096 字节 (CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE)。若在回调里
+ * 声明本结构体 (4KB 栈变量)，会立即栈溢出:
+ *
+ *   Guru Meditation Error: Stack protection fault
+ *   Detected in task "nimble_host"
+ *
+ * 因此回调里只 malloc 一块堆内存，把指针投入队列；由
+ * ble_cmd_task 负责释放。
+ */
 typedef struct {
     char json[BLE_RX_BUF_MAX];
 } ble_cmd_msg_t;
@@ -350,16 +365,15 @@ static esp_err_t ble_send(const char *data, size_t len)
 static void ble_cmd_task(void *arg)
 {
     (void)arg;
-    ble_cmd_msg_t *msg = malloc(sizeof(ble_cmd_msg_t));
-    if (msg == NULL) {
-        ESP_LOGE(TAG, "命令缓冲区分配失败");
-        s_cmd_task = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
+
+    /* 队列里存的是 ble_cmd_msg_t* (由 gatt_rx_access 堆分配) */
+    ble_cmd_msg_t *msg = NULL;
 
     while (1) {
-        if (xQueueReceive(s_cmd_queue, msg, portMAX_DELAY) != pdTRUE) {
+        if (xQueueReceive(s_cmd_queue, &msg, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (msg == NULL) {
             continue;
         }
 
@@ -372,6 +386,7 @@ static void ble_cmd_task(void *arg)
         char *resp = malloc(APP_CMD_RESP_MAX);
         if (resp == NULL) {
             ESP_LOGE(TAG, "响应缓冲区分配失败");
+            free(msg);
             continue;
         }
 
@@ -385,6 +400,8 @@ static void ble_cmd_task(void *arg)
         }
 
         free(resp);
+        free(msg);
+        msg = NULL;
     }
 }
 
@@ -467,10 +484,22 @@ static int gatt_rx_access(uint16_t conn_handle, uint16_t attr_handle,
         ESP_LOGI(TAG, "收到命令 (%u 字节)", s_rx_expected);
 
         if (s_cmd_queue != NULL) {
-            ble_cmd_msg_t msg;
-            memcpy(msg.json, s_rx_buf, (size_t)s_rx_expected + 1);
-            if (xQueueSend(s_cmd_queue, &msg, 0) != pdTRUE) {
-                ESP_LOGW(TAG, "命令队列已满，丢弃");
+            /*
+             * 用堆分配而非栈变量。
+             *
+             * 本回调运行在 nimble_host 任务 (栈仅 4096 字节)，
+             * ble_cmd_msg_t 含 4KB json 缓冲区，放栈上会立即溢出。
+             * 队列里存指针，由 ble_cmd_task 负责释放。
+             */
+            ble_cmd_msg_t *msg = malloc(sizeof(ble_cmd_msg_t));
+            if (msg == NULL) {
+                ESP_LOGW(TAG, "命令缓冲区分配失败，丢弃");
+            } else {
+                memcpy(msg->json, s_rx_buf, (size_t)s_rx_expected + 1);
+                if (xQueueSend(s_cmd_queue, &msg, 0) != pdTRUE) {
+                    ESP_LOGW(TAG, "命令队列已满，丢弃");
+                    free(msg);
+                }
             }
         }
 
@@ -741,7 +770,8 @@ esp_err_t app_ble_start(void)
 
     /* --- 命令队列与执行任务 --- */
     if (s_cmd_queue == NULL) {
-        s_cmd_queue = xQueueCreate(BLE_CMD_QUEUE_LEN, sizeof(ble_cmd_msg_t));
+        /* 队列存指针 (ble_cmd_msg_t*)，不是结构体本身 */
+        s_cmd_queue = xQueueCreate(BLE_CMD_QUEUE_LEN, sizeof(ble_cmd_msg_t *));
         if (s_cmd_queue == NULL) {
             ESP_LOGE(TAG, "创建命令队列失败");
             return ESP_ERR_NO_MEM;
