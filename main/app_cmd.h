@@ -45,7 +45,20 @@ extern "C" {
 #define APP_CMD_RESP_MAX    4096
 
 /**
- * @brief 执行一条命令
+ * @brief 命令来源通道
+ *
+ * 部分命令涉及敏感信息 (如蓝牙配对码)，需要按来源做权限判断:
+ *   - HTTP: 已通过 WiFi 密码保护，视为可信
+ *   - BLE:  需链路已加密 (已配对) 才允许读取
+ */
+typedef enum {
+    APP_CMD_SRC_HTTP = 0,   /*!< 来自 HTTP 服务 */
+    APP_CMD_SRC_BLE,        /*!< 来自 BLE GATT */
+    APP_CMD_SRC_LOCAL,      /*!< 本地调用 (串口/内部)，视为可信 */
+} app_cmd_src_t;
+
+/**
+ * @brief 执行一条命令 (带来源信息)
  *
  * 解析 JSON 中的 "cmd" 字段并分发到对应处理函数，把响应 JSON
  * 写入 out_buf。无论成功失败都会写入合法 JSON (失败时 ok=false)。
@@ -56,9 +69,18 @@ extern "C" {
  * @param[in]  json    请求 JSON 文本 (以 '\0' 结尾)
  * @param[out] out_buf 响应缓冲区
  * @param[in]  out_len 响应缓冲区长度
+ * @param[in]  src     命令来源通道 (用于权限判断)
  * @return ESP_OK 命令已执行 (响应可能是 ok=false)
  *         ESP_ERR_INVALID_ARG 参数为 NULL
  *         ESP_ERR_INVALID_SIZE 响应缓冲区不足
+ */
+esp_err_t app_cmd_execute_src(const char *json, char *out_buf, size_t out_len,
+                              app_cmd_src_t src);
+
+/**
+ * @brief 执行一条命令 (来源视为本地，拥有全部权限)
+ *
+ * 等价于 app_cmd_execute_src(..., APP_CMD_SRC_LOCAL)。
  */
 esp_err_t app_cmd_execute(const char *json, char *out_buf, size_t out_len);
 

@@ -166,7 +166,8 @@ static esp_err_t run_cmd(httpd_req_t *req, const char *cmd_name, const char *bod
         snprintf(json, HTTP_BODY_MAX + 64, "{\"cmd\":\"%s\"}", cmd_name);
     }
 
-    esp_err_t err = app_cmd_execute(json, resp, HTTP_RESP_MAX);
+    esp_err_t err = app_cmd_execute_src(json, resp, HTTP_RESP_MAX,
+                                        APP_CMD_SRC_HTTP);
 
     free(json);
 

@@ -243,6 +243,7 @@ iap> app boot
 - **WiFi 设置**：模式 (AP/STA/APSTA) / SSID / 密码 / 信道 / 连接数 / 隐藏 / IP，
   以及连接路由器（含扫描周边热点、静态 IP、手动重连）
 - **连接方式**：WiFi (HTTP) / 蓝牙 (BLE) 通道切换，页面自动适配
+- **蓝牙配对**：可选 6 位配对码（默认不启用），支持设置/修改/清除
 - **设备状态**：WiFi 热点 / 路由器 / 蓝牙 / 系统四张状态卡，含信号强度与信道
 - **配置导入 / 导出**：导出为 JSON 文件、显示为文本、从文件或文本框导入；
   可选「包含 WiFi 密码」用于完整迁移（含安全警告与二次确认）
@@ -271,7 +272,64 @@ iap> app boot
 ```
 
 两条通道**共用同一套命令实现** (`app_cmd.c`)，因此新增功能只需写一次。
-BLE 侧只是把收到的 JSON 交给 `app_cmd_execute()`。
+BLE 侧只是把收到的 JSON 交给 `app_cmd_execute_src()`。
+
+### 配对码
+
+可为蓝牙启用 6 位数字配对码，启用后客户端连接需输入该码。
+
+**默认不启用** —— 首次启动时配对码为空，客户端可直接连接。
+用户可随时设置、修改或清除配对码。
+
+| 方法 | 路径 | 请求体 | 说明 |
+|------|------|--------|------|
+| POST | `/api/ble/pin` | `{"get":1}` | 查询配对码与启用状态 |
+| POST | `/api/ble/pin` | `{"pin":"123456"}` | 设置或修改配对码（6 位数字） |
+| POST | `/api/ble/pin` | `{"pin":""}` 或 `{"enabled":0}` | 关闭配对 |
+
+响应统一为 `{"ok":true,"enabled":bool,"pin":"..."}`。
+未启用时 `enabled` 为 `false`、`pin` 为空串。
+
+```bash
+# 查询当前状态
+curl -X POST -d '{"get":1}' http://192.168.4.1/api/ble/pin
+# -> {"ok":true,"enabled":false,"pin":""}
+
+# 设置配对码
+curl -X POST -d '{"pin":"123456"}' http://192.168.4.1/api/ble/pin
+
+# 修改配对码 (同样用 pin 字段)
+curl -X POST -d '{"pin":"654321"}' http://192.168.4.1/api/ble/pin
+
+# 关闭配对
+curl -X POST -d '{"pin":""}' http://192.168.4.1/api/ble/pin
+```
+
+> 配对码存 NVS（命名空间 `blecfg`），掉电保存。
+> 校验规则：必须是 **6 位纯数字**，否则返回 `400`。
+
+#### 权限模型
+
+配对码是敏感信息，读取与修改按**来源通道**鉴权：
+
+| 来源 | 权限 |
+|------|------|
+| HTTP | 允许（已通过 WiFi 密码保护） |
+| BLE **已配对**（链路加密） | 允许 |
+| BLE **未配对** | 拒绝，返回「读取配对码需先完成配对」 |
+| 本地（串口/内部） | 允许 |
+
+这样「连接后获取配对码」的语义才成立：先输入配对码完成配对，
+建立加密链路后即可读取。未配对的连接读不到，避免绕过配对机制。
+
+> 未启用配对时不受此限制 —— 此时不存在配对码，也就没有"绕过"问题。
+
+> 实现上用 `ble_gap_conn_find()` 读连接的 `sec_state.encrypted`
+> 判断链路是否加密 —— 这是协议栈在配对完成后更新的真实状态。
+
+配对码启用后，设备的安全参数为：`sm_io_cap = DISP_ONLY`（显示方）、
+`mitm = 1`（要求中间人保护）、`bonding = 1`（绑定避免重复输入）、
+`sm_sc = 1`（LE Secure Connections）。
 
 ### GATT 结构
 
@@ -313,7 +371,8 @@ BLE 单包受 MTU 限制（默认 20 字节，协商后最大 244），因此命
 完整命令名：`status` / `led.set` / `led.effect` / `led.brightness` /
 `led.enable` / `led.sequence` / `all` / `brightness` / `effect` / `off` /
 `freq` / `wifi.get` / `wifi.set` / `wifi.scan` / `wifi.reconnect` /
-`wifi.reset` / `config.export` / `config.import` / `reboot` / `upgrade`
+`wifi.reset` / `wifi.enable` / `ble.enable` / `ble.pin` /
+`config.export` / `config.import` / `reboot` / `upgrade`
 
 响应统一为 `{"ok":true,...}` 或 `{"ok":false,"error":"..."}`。
 
@@ -497,7 +556,8 @@ BLE 通道使用同一套命令名：
   "ssid": "ESP-LED", "ip": "192.168.4.1", "clients": 2,
 
   "ble": {
-    "running": true, "connected": true, "name": "Butterfly-LED"
+    "running": true, "connected": true, "name": "Butterfly-LED",
+    "paired": true, "pairing": true
   },
 
   "wifi": {
@@ -520,6 +580,8 @@ BLE 通道使用同一套命令名：
 | `uptime` | 运行秒数 |
 | `ble.running` | BLE 服务是否启动 |
 | `ble.connected` | 是否有客户端已连接 |
+| `ble.paired` | 当前连接是否已配对（链路加密） |
+| `ble.pairing` | 是否启用了配对码 |
 | `wifi.mode` | 0=AP 1=STA 2=APSTA |
 | `wifi.sta_connected` | 是否已连上路由器 |
 | `wifi.sta_static` | 是否使用静态 IP |
@@ -546,6 +608,24 @@ BLE 通道使用同一套命令名：
 | POST | `/api/wifi/scan` | `{}` | 扫描周边热点（阻塞 2-4 秒） |
 | POST | `/api/wifi/reconnect` | `{}` | 手动触发 STA 重连 |
 | POST | `/api/wifi/reset` | `{}` | 恢复默认配置并重启（清除 NVS 用户配置） |
+| POST | `/api/wifi/enable` | `{"enabled":0,"confirm":1}` | 启用/禁用 WiFi（**需 `confirm:1`**） |
+| POST | `/api/ble/enable` | `{"enabled":0,"confirm":1}` | 启用/禁用蓝牙（**需 `confirm:1`**） |
+
+#### 服务开关
+
+关闭服务是有风险的操作，因此**必须显式传 `confirm:1`**，否则拒绝执行：
+
+```bash
+# 关闭蓝牙
+curl -X POST -d '{"enabled":0,"confirm":1}' http://192.168.4.1/api/ble/enable
+
+# 重新启用
+curl -X POST -d '{"enabled":1,"confirm":1}' http://192.168.4.1/api/ble/enable
+```
+
+> ⚠️ **关闭 WiFi 会立即断开当前连接**。若蓝牙也未启用，
+> 设备将只能通过串口恢复。响应会带 `warning` 字段明确提示。
+> Web 界面点击开关时会弹出二次确认。
 
 参数校验：
 

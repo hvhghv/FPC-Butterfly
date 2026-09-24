@@ -52,6 +52,7 @@ esp_err_t app_ble_disconnect(void) { return ESP_ERR_INVALID_STATE; }
 esp_err_t app_ble_set_pin(const char *pin) { (void)pin; return ESP_ERR_NOT_SUPPORTED; }
 bool      app_ble_pairing_enabled(void)    { return false; }
 const char *app_ble_get_pin(void)          { return ""; }
+bool      app_ble_is_encrypted(void)       { return false; }
 
 #else  /* BLE 可用 */
 
@@ -235,6 +236,26 @@ const char *app_ble_get_pin(void)
     return s_pin;
 }
 
+bool app_ble_is_encrypted(void)
+{
+    if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return false;
+    }
+
+    /*
+     * 从连接描述符里读安全状态。
+     *
+     * ble_gap_conn_find() 是唯一能拿到 sec_state 的途径 ——
+     * 它由协议栈在配对完成后更新，因此能真实反映链路是否加密。
+     */
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(s_conn_handle, &desc) != 0) {
+        return false;
+    }
+
+    return desc.sec_state.encrypted != 0;
+}
+
 /** 命令队列与任务 */
 static QueueHandle_t    s_cmd_queue  = NULL;
 static TaskHandle_t     s_cmd_task   = NULL;
@@ -337,7 +358,8 @@ static void ble_cmd_task(void *arg)
             continue;
         }
 
-        esp_err_t err = app_cmd_execute(msg->json, resp, APP_CMD_RESP_MAX);
+        esp_err_t err = app_cmd_execute_src(msg->json, resp, APP_CMD_RESP_MAX,
+                                            APP_CMD_SRC_BLE);
         if (err == ESP_OK) {
             ble_send(resp, strlen(resp));
         } else {

@@ -259,7 +259,8 @@ static esp_err_t cmd_status(char *out, size_t out_len)
                      "\"boottarget\":%u,\"iapver\":\"%s\","
                      "\"cfgaddr\":%" PRIu32 ","
                      "\"ssid\":\"%s\",\"ip\":\"%s\",\"clients\":%u,"
-                     "\"ble\":{\"running\":%s,\"connected\":%s,\"name\":\"%s\"},"
+                     "\"ble\":{\"running\":%s,\"connected\":%s,\"name\":\"%s\","
+                     "\"paired\":%s,\"pairing\":%s},"
                      "\"wifi\":{\"mode\":%u,\"ap_clients\":%u,"
                      "\"sta_enabled\":%s,\"sta_connected\":%s,"
                      "\"sta_static\":%s,\"sta_ssid\":\"%s\","
@@ -276,6 +277,8 @@ static esp_err_t cmd_status(char *out, size_t out_len)
                      app_ble_is_running() ? "true" : "false",
                      app_ble_is_connected() ? "true" : "false",
                      APP_BLE_DEVICE_NAME,
+                     app_ble_is_encrypted() ? "true" : "false",
+                     app_ble_pairing_enabled() ? "true" : "false",
                      app_wifi_get_mode(),
                      app_wifi_get_sta_count(),
                      st.enabled ? "true" : "false",
@@ -949,13 +952,37 @@ static esp_err_t cmd_wifi_enable(const char *json, char *out, size_t out_len)
 
 /* ============================================================================
  * 命令: BLE 配对码 (ble.pin)
+ *
+ * 安全模型:
+ *   配对码是敏感信息 —— 若任何人都能读到，配对机制就形同虚设。
+ *   因此读取操作按来源通道鉴权:
+ *     - HTTP / 本地: 视为可信 (已通过 WiFi 密码或串口)
+ *     - BLE:        要求链路**已加密** (即已配对成功)
+ *
+ *   这样"连接后获取配对码"的语义才成立:
+ *     先输入配对码完成配对 -> 建立加密链路 -> 此时可读取配对码
+ *   未配对的连接读不到，避免绕过配对。
  * ========================================================================== */
+
+/** 当前命令的来源通道 (由 app_cmd_execute_src 设置) */
+static app_cmd_src_t s_cmd_src = APP_CMD_SRC_LOCAL;
 
 static esp_err_t cmd_ble_pin(const char *json, char *out, size_t out_len)
 {
     /* --- 查询 --- */
     long get = 0;
     if (app_cmd_get_int(json, "get", &get) && get == 1) {
+        /*
+         * 从 BLE 通道读取配对码时，必须已配对 (链路加密)。
+         *
+         * 否则任何能连上 GATT 的客户端都能直接读到配对码，
+         * 配对就失去意义了。
+         */
+        if (s_cmd_src == APP_CMD_SRC_BLE && !app_ble_is_encrypted()) {
+            return reply_error(out, out_len,
+                               "读取配对码需先完成配对 (当前链路未加密)");
+        }
+
         snprintf(out, out_len,
                  "{\"ok\":true,\"enabled\":%s,\"pin\":\"%s\"}",
                  app_ble_pairing_enabled() ? "true" : "false",
@@ -964,6 +991,16 @@ static esp_err_t cmd_ble_pin(const char *json, char *out, size_t out_len)
     }
 
     /* --- 设置 --- */
+    /*
+     * 修改配对码同样需要权限 —— 否则未配对的客户端可以直接
+     * 把配对码改掉或清空，等于绕过配对。
+     */
+    if (s_cmd_src == APP_CMD_SRC_BLE && app_ble_pairing_enabled() &&
+        !app_ble_is_encrypted()) {
+        return reply_error(out, out_len,
+                           "修改配对码需先完成配对 (当前链路未加密)");
+    }
+
     char pin[16];
     const char *p = NULL;
     if (app_cmd_get_str(json, "pin", pin, sizeof(pin))) {
@@ -1435,11 +1472,15 @@ static esp_err_t cmd_config_import(const char *json, char *out, size_t out_len)
  * 命令分发
  * ========================================================================== */
 
-esp_err_t app_cmd_execute(const char *json, char *out_buf, size_t out_len)
+esp_err_t app_cmd_execute_src(const char *json, char *out_buf, size_t out_len,
+                              app_cmd_src_t src)
 {
     if (json == NULL || out_buf == NULL || out_len < 64) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    /* 记录来源，供需要鉴权的命令 (如 ble.pin) 判断权限 */
+    s_cmd_src = src;
 
     char cmd[24];
     if (!app_cmd_get_str(json, "cmd", cmd, sizeof(cmd))) {
@@ -1558,4 +1599,15 @@ esp_err_t app_cmd_execute(const char *json, char *out_buf, size_t out_len)
     }
 
     return reply_error(out_buf, out_len, "未知命令");
+}
+
+esp_err_t app_cmd_execute(const char *json, char *out_buf, size_t out_len)
+{
+    /*
+     * 默认来源为本地 —— 拥有全部权限。
+     *
+     * HTTP 与 BLE 传输层应调用 app_cmd_execute_src() 显式传入来源，
+     * 以便对敏感命令 (如 ble.pin) 做权限判断。
+     */
+    return app_cmd_execute_src(json, out_buf, out_len, APP_CMD_SRC_LOCAL);
 }

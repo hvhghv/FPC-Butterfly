@@ -78,6 +78,16 @@ bool app_ble_pairing_enabled(void);
 const char *app_ble_get_pin(void);
 
 /**
+ * @brief 查询当前连接是否已加密 (已通过配对)
+ *
+ * 用于权限判断: 配对码本身是敏感信息，只应允许**已配对**的
+ * 客户端读取，否则配对机制形同虚设。
+ *
+ * @return true 已连接且链路已加密
+ */
+bool app_ble_is_encrypted(void);
+
+/**
  * @brief 启动 BLE 服务
  *
  * 初始化 NimBLE 协议栈、注册 GATT 服务并开始广播。

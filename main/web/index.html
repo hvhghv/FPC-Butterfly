@@ -146,15 +146,23 @@ iOS 与 Firefox 不支持 Web Bluetooth。</div>
 </div>
 
 <div class="adv">
-<div class="sh" style="font-size:12px;color:var(--dim);margin-bottom:6px">蓝牙设置</div>
+<div class="sh" style="font-size:12px;color:var(--dim);margin-bottom:6px">
+蓝牙配对 <span class="ps">（可选，默认不启用）</span></div>
 <div class="frow"><label>配对码</label>
 <div style="display:flex;gap:8px;min-width:0">
-<input type="text" id="blepin" maxlength="6" placeholder="6 位数字，留空 = 免配对"
-style="flex:1;min-width:0">
+<input type="text" id="blepin" maxlength="6" placeholder="6 位数字，留空 = 不启用配对"
+style="flex:1;min-width:0" inputmode="numeric">
 <button class="gray" onclick="saveBlePin()" style="margin:0;padding:6px 12px;flex:none">保存</button>
 </div></div>
 <div class="fnote" style="margin:-2px 0 4px 64px">
-启用后客户端连接需输入该码；清空并保存可关闭配对</div>
+输入 6 位数字并保存即启用；清空并保存则关闭配对</div>
+<div class="frow"><label>当前码</label>
+<div style="display:flex;gap:8px;align-items:center;min-width:0">
+<span class="ps" id="blepinview" style="flex:1">—</span>
+<button class="gray" onclick="loadBlePin()" style="margin:0;padding:6px 12px;flex:none">读取</button>
+</div></div>
+<div class="fnote" style="margin:-2px 0 4px 64px">
+通过蓝牙读取需先完成配对（链路加密后可见）</div>
 </div>
 </div>
 
@@ -602,24 +610,58 @@ w.className=svcWifiOn?'gray':'danger';
 b.className=svcBleOn?'gray':'danger';}
 
 /* --- 蓝牙配对码 --- */
+/* 记录设备当前的配对码状态，用于区分"设置"与"修改" */
+let blePinEnabled=false, blePinCurrent='';
+
 async function loadBlePin(){
+const view=document.getElementById('blepinview');
 const r=await post('/api/ble/pin',{get:1});
-if(!r)return;
-document.getElementById('blepin').value=r.pin||'';
+if(!r){
+/* 请求被拒 (如 BLE 通道未配对) */
+view.textContent='读取失败（需先配对）';
+return;}
+blePinEnabled=!!r.enabled;
+blePinCurrent=r.pin||'';
+/*
+ * 只更新「当前码」显示，**不回填输入框** ——
+ * 输入框用于输入新配对码，回填会让用户误以为那就是要提交的值。
+ */
 document.getElementById('blepin').placeholder=
-r.enabled?'当前已启用配对':'6 位数字，留空 = 免配对';
-log('配对码状态: '+(r.enabled?'已启用 ('+r.pin+')':'未启用'));}
+blePinEnabled?'输入新配对码以修改':'6 位数字，留空 = 不启用配对';
+view.textContent=blePinEnabled?blePinCurrent:'未启用配对（免配对连接）';
+log('配对码: '+(blePinEnabled?'已启用 '+blePinCurrent:'未启用'));}
 
 async function saveBlePin(){
 const pin=document.getElementById('blepin').value.trim();
 if(pin&&!/^\d{6}$/.test(pin)){log('配对码必须是 6 位数字',true);return;}
-const msg=pin?'确定启用配对码 '+pin+'？\n\n客户端连接时需输入该码。'
-:'确定关闭配对？\n\n客户端将可直接连接，无需配对码。';
+
+/* 根据当前状态与输入给出准确的确认提示 */
+let msg;
+if(pin){
+if(blePinEnabled&&pin===blePinCurrent){
+log('新配对码与当前相同，无需修改');return;}
+msg=(blePinEnabled?'确定把配对码改为 '+pin+'？':'确定启用配对码 '+pin+'？')+
+'\n\n客户端连接时需输入该码。';
+}else{
+if(!blePinEnabled){log('当前未启用配对，无需关闭');return;}
+msg='确定关闭配对？\n\n客户端将可直接连接，无需配对码。';}
+
 if(!confirm(msg))return;
+
 const r=await post('/api/ble/pin',{pin:pin});
-if(r){log(pin?'配对码已设为 '+r.pin:'配对已关闭');
+if(!r)return;
+
+/* 更新状态与显示 */
+blePinEnabled=!!r.enabled;
+blePinCurrent=r.pin||'';
+document.getElementById('blepin').value='';
 document.getElementById('blepin').placeholder=
-r.enabled?'当前已启用配对':'6 位数字，留空 = 免配对';}}
+blePinEnabled?'输入新配对码以修改':'6 位数字，留空 = 不启用配对';
+document.getElementById('blepinview').textContent=
+blePinEnabled?blePinCurrent:'未启用配对（免配对连接）';
+
+if(pin){log(blePinEnabled?'配对码已设为 '+blePinCurrent:'配对已关闭');}
+else{log('配对已关闭');}}
 
 /* --- 配置导入 / 导出 --- */
 let cfgCache=null;   /* 最近一次导出的配置文本 */
@@ -935,6 +977,7 @@ const rows=[['芯片',d.chip],['IDF 版本',d.idf],['程序版本',d.app],
 ['启动目标',d.boottarget],['IAP 版本',d.iapver],
 ['AP SSID',d.ssid],['AP 地址',d.ip],['接入客户端',d.clients+' 个'],
 ['蓝牙名称',bl.name||'—'],['蓝牙状态',bl.running?(bl.connected?'已连接':'广播中'):'未启动'],
+['蓝牙配对',bl.pairing?(bl.paired?'已配对 (链路加密)':'已启用，待配对'):'未启用'],
 ['路由器 SSID',w.sta_ssid||'—'],['路由器 IP',w.sta_ip||'—'],
 ['路由器网关',w.sta_gw||'—'],['子网掩码',w.sta_mask||'—'],
 ['DNS',w.sta_dns||'—'],['信号强度',w.sta_connected?w.sta_rssi+' dBm':'—']];
@@ -961,8 +1004,12 @@ else{document.getElementById('st_sta').textContent=
 
 /* 蓝牙 */
 document.getElementById('st_bledot').innerHTML=dot(!!bl.connected);
-document.getElementById('st_ble').textContent=
-!bl.running?'未启动':(bl.connected?'已连接 · '+bl.name:'广播中 · '+bl.name);
+let bleTxt;
+if(!bl.running){bleTxt='未启动';}
+else{
+bleTxt=(bl.connected?'已连接':'广播中')+' · '+bl.name;
+if(bl.pairing){bleTxt+=bl.paired?' · 已配对':' · 待配对';}}
+document.getElementById('st_ble').textContent=bleTxt;
 
 /* 系统 */
 document.getElementById('st_sys').textContent=
