@@ -49,6 +49,15 @@
 
 static const char *TAG = "app_cmd";
 
+/*
+ * 延迟重启请求 (实现在 main.c)。
+ *
+ * 命令层只负责投递请求，实际重启在 main.c 的 restart_task 中
+ * 于响应发出后执行，避免响应还没送达设备就重启。
+ */
+extern void app_request_reboot(void);
+extern void app_request_upgrade(void);
+
 /* ============================================================================
  * JSON 工具
  * ========================================================================== */
@@ -1557,15 +1566,15 @@ esp_err_t app_cmd_execute_src(const char *json, char *out_buf, size_t out_len,
          * 恢复默认 WiFi 配置。
          *
          * 与 HTTP 版本一致: 清除 NVS 用户配置后重启，让默认值生效。
+         * 同样使用延迟重启，保证响应能先发出去。
          */
         esp_err_t e = app_wifi_reset_cfg();
         if (e != ESP_OK) {
             return reply_error(out_buf, out_len, esp_err_to_name(e));
         }
         snprintf(out_buf, out_len, "{\"ok\":true,\"reset\":true,\"reboot\":true}");
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_restart();
-        return ESP_OK;   /* 不会执行到 */
+        app_request_reboot();
+        return ESP_OK;
     }
 
     /* --- 配置导入 / 导出 --- */
@@ -1579,22 +1588,23 @@ esp_err_t app_cmd_execute_src(const char *json, char *out_buf, size_t out_len,
     /*
      * 重启类命令。
      *
-     * 先把响应写进缓冲区 (调用方负责发出去)，再延迟重启。
-     * 延迟 500 ms 是为了让传输层有时间把响应送达 —— BLE 的
-     * notify 尤其需要这点时间。
+     * 关键: 只写响应并投递「延迟重启」请求，然后**立即返回**。
+     *
+     * 不能在这里直接 esp_restart() —— 那样调用方 (HTTP/BLE 传输层)
+     * 还没机会把 out_buf 里的响应发出去，设备就已经重启了。
+     * 浏览器 fetch 收不到响应，只能等到超时，表现为按钮"没反应"。
+     *
+     * 实际重启由 main.c 的 restart_task 在响应发出后 ~800ms 执行。
      */
     if (strcmp(cmd, "reboot") == 0) {
         snprintf(out_buf, out_len, "{\"ok\":true,\"action\":\"reboot\"}");
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_restart();
-        return ESP_OK;   /* 不会执行到 */
+        app_request_reboot();
+        return ESP_OK;
     }
 
     if (strcmp(cmd, "upgrade") == 0) {
         snprintf(out_buf, out_len, "{\"ok\":true,\"action\":\"upgrade\"}");
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_err_t err = iap_user_request_download();
-        ESP_LOGE(TAG, "请求下载失败: %s", esp_err_to_name(err));
+        app_request_upgrade();
         return ESP_OK;
     }
 

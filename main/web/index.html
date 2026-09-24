@@ -924,13 +924,13 @@ log(url+' 成功');return JSON.parse(t);}
 catch(e){log(url+' 失败: '+e,true);return null;}}
 
 /* --- GET 类请求 (status / wifi / config) 同样支持双通道 --- */
-async function getCmd(cmd,params){
+async function getCmd(cmd,params,quiet){
 if(channel==='ble'){
 try{
 const req=Object.assign({cmd:cmd},params||{});
 const resp=await bleRequest(JSON.stringify(req));
 return JSON.parse(resp);}
-catch(e){log(cmd+' 失败: '+e,true);return null;}}
+catch(e){if(!quiet)log(cmd+' 失败: '+e,true);return null;}}
 const map={'status':'/api/status','wifi.get':'/api/wifi','config.export':'/api/config'};
 const url=map[cmd]||('/api/'+cmd.replace('.','/'));
 try{
@@ -945,11 +945,15 @@ headers:{'Content-Type':'application/json'},body:JSON.stringify(params)})
 :await fetch(url);
 if(!r.ok)throw new Error('HTTP '+r.status);
 return await r.json();}
-catch(e){log(cmd+' 失败: '+e,true);return null;}}
+catch(e){if(!quiet)log(cmd+' 失败: '+e,true);return null;}}
 
 async function refresh(){
-const d=await getCmd('status');
-if(!d)return;
+/*
+ * 轮询用 quiet 模式: 设备重启/短暂拥塞时不要刷屏报错，
+ * 只把状态点标红即可。
+ */
+const d=await getCmd('status',null,true);
+if(!d){document.getElementById('dot').className='dot err';return;}
 try{
 document.getElementById('netinfo').textContent=
 'SSID '+d.ssid+'  地址 http://'+d.ip+'/  客户端 '+d.clients+' 个';
@@ -1036,12 +1040,29 @@ catch(e){log('刷新失败: '+e,true);
 document.getElementById('dot').className='dot err';}}
 
 function reboot(){if(!confirm('确定重启设备？'))return;
-post('/api/reboot',{});log('设备重启中，请稍后刷新');}
+log('设备重启中，请稍后刷新');
+post('/api/reboot',{}).then(()=>{document.getElementById('dot').className='dot err';});}
 function upgrade(){if(!confirm('确定重启进入 IAP 下载模式？\n\n'+
 '设备将重启并停留在 IAP，可用 IAP 页面重新烧录用户程序。'))return;
-post('/api/upgrade',{});log('正在进入 IAP 下载模式...');}
+log('正在进入 IAP 下载模式...');
+post('/api/upgrade',{}).then(()=>{document.getElementById('dot').className='dot err';});}
 
-buildLeds();refresh();loadWifi();loadBlePin();setInterval(refresh,5000);
+/*
+ * 状态轮询。
+ *
+ * 间隔取 8 秒而非 5 秒: status 响应约 3KB，过于频繁的轮询会在
+ * WiFi 拥塞时造成 socket 压力 (error in send : 11 / 408 Timeout)。
+ */
+let pollTimer=null;
+function startPoll(){
+if(pollTimer)clearInterval(pollTimer);
+pollTimer=setInterval(()=>{
+/* 页面不可见时跳过，减少无谓流量 */
+if(document.hidden)return;
+refresh();},8000);}
+
+buildLeds();refresh();loadWifi();loadBlePin();startPoll();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
 
 </script>
 </body>

@@ -90,8 +90,20 @@ static app_config_t s_app_cfg = {
     .baudrate   = 115200,
 };
 
-/* 升级请求队列（示例：任何任务都可投递） */
-static QueueHandle_t s_upgrade_req = NULL;
+/**
+ * @brief 请求重启动作类型
+ *
+ * 通过 s_restart_req 队列投递给 restart_task，实际重启在任务中执行。
+ * 这样命令层可以「先返回响应、后重启」，避免响应还没发出设备就重启
+ * (浏览器 fetch 会等到超时，表现为按钮"没反应")。
+ */
+typedef enum {
+    RESTART_ACTION_REBOOT = 0,   /*!< 普通重启 */
+    RESTART_ACTION_UPGRADE,      /*!< 重启进入 IAP 下载模式 */
+} restart_action_t;
+
+/* 重启/升级请求队列（任何任务都可投递） */
+static QueueHandle_t s_restart_req = NULL;
 
 /* ============================================================================
  * 启动参数解析
@@ -195,36 +207,60 @@ static void dump_boot_param(void)
  * ========================================================================== */
 
 /**
- * @brief 请求升级（线程安全，可从任意任务/中断投递）
+ * @brief 请求重启（线程安全，可从任意任务投递）
  *
- * 实际重启在 upgrade_task 中执行，避免在中断上下文调用。
+ * 实际重启在 restart_task 中执行。调用后立即返回，让调用方
+ * (如 HTTP handler) 有时间把响应发出去。
  */
-void app_request_upgrade(void)
+void app_request_reboot(void)
 {
-    if (s_upgrade_req != NULL) {
-        uint8_t dummy = 1;
-        xQueueSend(s_upgrade_req, &dummy, pdMS_TO_TICKS(10));
+    if (s_restart_req != NULL) {
+        restart_action_t action = RESTART_ACTION_REBOOT;
+        xQueueSend(s_restart_req, &action, pdMS_TO_TICKS(10));
     }
 }
 
 /**
- * @brief 升级请求处理任务
+ * @brief 请求升级（线程安全，可从任意任务投递）
  *
- * 收到请求后置位下载标志并重启，IAP 启动时会进入下载模式。
+ * 实际重启在 restart_task 中执行，避免在中断上下文调用。
  */
-static void upgrade_task(void *arg)
+void app_request_upgrade(void)
+{
+    if (s_restart_req != NULL) {
+        restart_action_t action = RESTART_ACTION_UPGRADE;
+        xQueueSend(s_restart_req, &action, pdMS_TO_TICKS(10));
+    }
+}
+
+/**
+ * @brief 重启/升级请求处理任务
+ *
+ * 收到请求后先等待一小段时间，让 HTTP/BLE 传输层把响应发出去，
+ * 再执行重启。这样浏览器能立刻收到 {"ok":true} 而不是等到超时。
+ */
+static void restart_task(void *arg)
 {
     (void)arg;
-    uint8_t dummy;
+    restart_action_t action;
 
     while (1) {
-        if (xQueueReceive(s_upgrade_req, &dummy, portMAX_DELAY) == pdTRUE) {
-            ESP_LOGW(TAG, "收到升级请求，%d 秒后重启进入 IAP 下载模式...", 2);
-            vTaskDelay(pdMS_TO_TICKS(2000));
+        if (xQueueReceive(s_restart_req, &action, portMAX_DELAY) == pdTRUE) {
+            /*
+             * 延迟 800ms: 给传输层足够时间把响应送达。
+             * HTTP 响应通常几毫秒内发出，BLE notify 需要更久一些。
+             */
+            vTaskDelay(pdMS_TO_TICKS(800));
 
-            /* 置位下载标志并重启 — 正常情况不会返回 */
-            esp_err_t err = iap_user_request_download();
-            ESP_LOGE(TAG, "请求下载失败: %s", esp_err_to_name(err));
+            if (action == RESTART_ACTION_UPGRADE) {
+                ESP_LOGW(TAG, "进入 IAP 下载模式，重启中...");
+                /* 置位下载标志并重启 — 正常情况不会返回 */
+                esp_err_t err = iap_user_request_download();
+                ESP_LOGE(TAG, "请求下载失败: %s", esp_err_to_name(err));
+            } else {
+                ESP_LOGW(TAG, "重启中...");
+                esp_restart();
+            }
         }
     }
 }
@@ -381,12 +417,12 @@ void app_main(void)
         ESP_LOGI(TAG, "  蓝牙名称: %s", APP_BLE_DEVICE_NAME);
     }
 
-    /* --- 7. 创建升级请求队列与任务 --------------------------------------- */
-    s_upgrade_req = xQueueCreate(4, sizeof(uint8_t));
-    if (s_upgrade_req == NULL) {
-        ESP_LOGE(TAG, "创建升级队列失败");
+    /* --- 7. 创建重启/升级请求队列与任务 ---------------------------------- */
+    s_restart_req = xQueueCreate(4, sizeof(restart_action_t));
+    if (s_restart_req == NULL) {
+        ESP_LOGE(TAG, "创建重启队列失败");
     } else {
-        xTaskCreate(upgrade_task, "upgrade", 3072, NULL, 5, NULL);
+        xTaskCreate(restart_task, "restart", 3072, NULL, 5, NULL);
     }
 
     /* --- 8. 启动状态汇报任务 -------------------------------------------- */

@@ -424,16 +424,19 @@ esp_err_t app_http_start(void)
      *   httpd_sock_err: error in send : 11  (EAGAIN)
      *   httpd_sock_err: error in send : 104 (ECONNRESET)
      * 因此适当放宽。
+     *
+     * 注意: status 响应约 3KB，在 WiFi 拥塞时单次发送可能耗时较久，
+     * send_wait_timeout 太小会中途失败 (408 Request Timeout)。
      */
-    config.recv_wait_timeout = 15;
-    config.send_wait_timeout = 15;
+    config.recv_wait_timeout = 20;
+    config.send_wait_timeout = 30;
     /*
      * 并发连接数:
      *   浏览器通常同时开 2-6 个连接 (页面 + favicon + 轮询 XHR)。
      *   默认 4 个偏少，容易触发 LRU 清理导致连接被强制关闭。
      *   注意: 每连接约占用 1-2KB，需与空闲堆平衡。
      */
-    config.max_open_sockets  = 6;
+    config.max_open_sockets  = 7;
     /* 使用通配符匹配以支持兜底路由 */
     config.uri_match_fn      = httpd_uri_match_wildcard;
 
