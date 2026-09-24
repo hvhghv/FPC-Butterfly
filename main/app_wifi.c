@@ -987,7 +987,15 @@ static esp_err_t apply_ap_ip_mode(const app_wifi_cfg_t *cfg)
     esp_netif_ip_info_t ip_info = {0};
     ip_info.ip.addr      = htonl(ip);
     ip_info.gw.addr      = htonl(ip);
-    ip_info.netmask.addr = htonl(0x00FFFFFF);   /* 255.255.255.0 */
+    /*
+     * 子网掩码 255.255.255.0。
+     *
+     * 注意字节序: lwIP 的 ip4_addr_t 以**网络序**存储，
+     * 主机序的 255.255.255.0 = 0xFFFFFF00，因此必须 htonl(0xFFFFFF00)。
+     * 若误写成 htonl(0x00FFFFFF)，网络序下会变成 0.255.255.255，
+     * DHCP 服务器启动时报 "dhcps: Illegal subnet mask."。
+     */
+    ip_info.netmask.addr = htonl(0xFFFFFF00);
 
     /* 必须先停 DHCP 服务器，否则 set_ip_info 会被拒绝 */
     esp_netif_dhcps_stop(s_ap_netif);
