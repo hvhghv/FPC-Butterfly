@@ -50,6 +50,11 @@ static const char *TAG = "app_wifi";
 #define WIFI_NVS_KEY_IP     "ip"
 #define WIFI_NVS_KEY_STASSID "stassid"
 #define WIFI_NVS_KEY_STAPASS "stapass"
+#define WIFI_NVS_KEY_STASTATIC "stastat"
+#define WIFI_NVS_KEY_STAIP   "staip"
+#define WIFI_NVS_KEY_STAMASK "stamask"
+#define WIFI_NVS_KEY_STAGW   "stagw"
+#define WIFI_NVS_KEY_STADNS  "stadns"
 
 /*
  * 芯片能力检查: WiFi
@@ -70,6 +75,7 @@ esp_err_t app_wifi_get_cfg(app_wifi_cfg_t *cfg) { (void)cfg; return ESP_ERR_NOT_
 esp_err_t app_wifi_set_cfg(const app_wifi_cfg_t *cfg) { (void)cfg; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t app_wifi_reset_cfg(void)          { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t app_wifi_get_sta_status(app_wifi_sta_status_t *st) { (void)st; return ESP_ERR_NOT_SUPPORTED; }
+uint8_t app_wifi_get_mode(void)             { return APP_WIFI_MODE_AP; }
 esp_err_t app_wifi_sta_reconnect(void)      { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t app_wifi_scan(app_wifi_ap_info_t *list, uint8_t max, uint8_t *found)
 {
@@ -244,7 +250,8 @@ static void cfg_set_defaults(app_wifi_cfg_t *cfg)
     cfg->max_conn = APP_WIFI_DEFAULT_MAX_CONN;
     cfg->hidden   = false;
     snprintf(cfg->ip, sizeof(cfg->ip), "192.168.4.1");
-    /* STA 默认空，即未配置路由器 */
+    /* STA 默认空，即未配置路由器；默认用 DHCP */
+    cfg->sta_static_ip = false;
 }
 
 /**
@@ -318,10 +325,17 @@ static bool load_cfg_from_nvs(app_wifi_cfg_t *cfg)
     nvs_read_str(h, WIFI_NVS_KEY_IP,   cfg->ip,   sizeof(cfg->ip));
     nvs_read_str(h, WIFI_NVS_KEY_STASSID, cfg->sta_ssid, sizeof(cfg->sta_ssid));
     nvs_read_str(h, WIFI_NVS_KEY_STAPASS, cfg->sta_password, sizeof(cfg->sta_password));
+    nvs_read_str(h, WIFI_NVS_KEY_STAIP,   cfg->sta_ip,   sizeof(cfg->sta_ip));
+    nvs_read_str(h, WIFI_NVS_KEY_STAMASK, cfg->sta_mask, sizeof(cfg->sta_mask));
+    nvs_read_str(h, WIFI_NVS_KEY_STAGW,   cfg->sta_gw,   sizeof(cfg->sta_gw));
+    nvs_read_str(h, WIFI_NVS_KEY_STADNS,  cfg->sta_dns,  sizeof(cfg->sta_dns));
 
     uint8_t u8 = 0;
     if (nvs_get_u8(h, WIFI_NVS_KEY_MODE, &u8) == ESP_OK) {
         cfg->mode = u8;
+    }
+    if (nvs_get_u8(h, WIFI_NVS_KEY_STASTATIC, &u8) == ESP_OK) {
+        cfg->sta_static_ip = (u8 != 0);
     }
     if (nvs_get_u8(h, WIFI_NVS_KEY_CHAN, &u8) == ESP_OK) {
         cfg->channel = u8;
@@ -358,6 +372,12 @@ static esp_err_t save_cfg_to_nvs(const app_wifi_cfg_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, WIFI_NVS_KEY_IP,   cfg->ip);
     if (err == ESP_OK) err = nvs_set_str(h, WIFI_NVS_KEY_STASSID, cfg->sta_ssid);
     if (err == ESP_OK) err = nvs_set_str(h, WIFI_NVS_KEY_STAPASS, cfg->sta_password);
+    if (err == ESP_OK) err = nvs_set_str(h, WIFI_NVS_KEY_STAIP,   cfg->sta_ip);
+    if (err == ESP_OK) err = nvs_set_str(h, WIFI_NVS_KEY_STAMASK, cfg->sta_mask);
+    if (err == ESP_OK) err = nvs_set_str(h, WIFI_NVS_KEY_STAGW,   cfg->sta_gw);
+    if (err == ESP_OK) err = nvs_set_str(h, WIFI_NVS_KEY_STADNS,  cfg->sta_dns);
+    if (err == ESP_OK) err = nvs_set_u8(h, WIFI_NVS_KEY_STASTATIC,
+                                        cfg->sta_static_ip ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, WIFI_NVS_KEY_MODE,   cfg->mode);
     if (err == ESP_OK) err = nvs_set_u8(h, WIFI_NVS_KEY_CHAN,   cfg->channel);
     if (err == ESP_OK) err = nvs_set_u8(h, WIFI_NVS_KEY_MAXCN,  cfg->max_conn);
@@ -372,6 +392,9 @@ static esp_err_t save_cfg_to_nvs(const app_wifi_cfg_t *cfg)
     }
     return err;
 }
+
+/* 前置声明: 定义在后面，但 apply_cfg_live() 与启动流程都要用 */
+static esp_err_t apply_sta_ip_mode(const app_wifi_cfg_t *cfg);
 
 /**
  * @brief 确保 s_cfg 已加载 (首次调用时从 NVS 读取)
@@ -511,6 +534,45 @@ static esp_err_t validate_cfg(const app_wifi_cfg_t *cfg)
                      (unsigned)p);
             return ESP_ERR_INVALID_ARG;
         }
+
+        /* 静态 IP: 三项必填且合法，且 IP 不能与网关相同 */
+        if (cfg->sta_static_ip) {
+            uint32_t ip   = parse_ipv4(cfg->sta_ip);
+            uint32_t mask = parse_ipv4(cfg->sta_mask);
+            uint32_t gw   = parse_ipv4(cfg->sta_gw);
+
+            if (ip == 0) {
+                ESP_LOGW(TAG, "STA 静态 IP 非法: '%s'", cfg->sta_ip);
+                return ESP_ERR_INVALID_ARG;
+            }
+            if (mask == 0) {
+                ESP_LOGW(TAG, "STA 子网掩码非法: '%s'", cfg->sta_mask);
+                return ESP_ERR_INVALID_ARG;
+            }
+            if (gw == 0) {
+                ESP_LOGW(TAG, "STA 网关非法: '%s'", cfg->sta_gw);
+                return ESP_ERR_INVALID_ARG;
+            }
+            if (ip == gw) {
+                ESP_LOGW(TAG, "STA 静态 IP 不能与网关相同");
+                return ESP_ERR_INVALID_ARG;
+            }
+            /*
+             * IP 与网关必须在同一子网，否则设备无法与网关通信。
+             * 判据: (ip & mask) == (gw & mask)
+             */
+            if ((ip & mask) != (gw & mask)) {
+                ESP_LOGW(TAG, "STA 静态 IP 与网关不在同一子网: "
+                              "%s / %s / %s",
+                         cfg->sta_ip, cfg->sta_mask, cfg->sta_gw);
+                return ESP_ERR_INVALID_ARG;
+            }
+            /* DNS 可留空；非空时必须合法 */
+            if (cfg->sta_dns[0] != '\0' && parse_ipv4(cfg->sta_dns) == 0) {
+                ESP_LOGW(TAG, "STA DNS 非法: '%s'", cfg->sta_dns);
+                return ESP_ERR_INVALID_ARG;
+            }
+        }
     }
 
     return ESP_OK;
@@ -608,6 +670,9 @@ static esp_err_t apply_cfg_live(const app_wifi_cfg_t *cfg)
             return err;
         }
 
+        /* 应用 IP 获取方式 (DHCP / 静态) */
+        apply_sta_ip_mode(cfg);
+
         /* 重置重试计数并重新连接 */
         s_sta_retry = 0;
         esp_wifi_disconnect();
@@ -627,20 +692,53 @@ esp_err_t app_wifi_get_sta_status(app_wifi_sta_status_t *st)
     ensure_cfg_loaded();
 
     memset(st, 0, sizeof(*st));
-    st->enabled = (s_cfg.mode == APP_WIFI_MODE_STA ||
-                   s_cfg.mode == APP_WIFI_MODE_APSTA);
+    st->enabled   = (s_cfg.mode == APP_WIFI_MODE_STA ||
+                     s_cfg.mode == APP_WIFI_MODE_APSTA);
+    st->static_ip = s_cfg.sta_static_ip;
     snprintf(st->ssid, sizeof(st->ssid), "%s", s_cfg.sta_ssid);
 
     if (s_started && st->enabled) {
         st->connected = s_sta_connected;
-        snprintf(st->ip, sizeof(st->ip), "%s", s_sta_ip);
-        snprintf(st->gw, sizeof(st->gw), "%s", s_sta_gw);
 
-        /* RSSI 只在连接状态下有意义 */
+        /*
+         * IP / 掩码 / 网关 / DNS 直接读网卡，而不是用事件里缓存的字符串。
+         *
+         * 静态 IP 模式下没有 DHCP 事件，缓存值可能为空；
+         * 且静态 IP 在连接前就已生效，读网卡才能反映真实状态。
+         */
+        if (s_sta_netif != NULL) {
+            esp_netif_ip_info_t ip_info = {0};
+            if (esp_netif_get_ip_info(s_sta_netif, &ip_info) == ESP_OK &&
+                ip_info.ip.addr != 0) {
+                snprintf(st->ip, sizeof(st->ip), IPSTR, IP2STR(&ip_info.ip));
+                snprintf(st->gw, sizeof(st->gw), IPSTR, IP2STR(&ip_info.gw));
+                snprintf(st->mask, sizeof(st->mask), IPSTR, IP2STR(&ip_info.netmask));
+            }
+
+            esp_netif_dns_info_t dns = {0};
+            if (esp_netif_get_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN,
+                                       &dns) == ESP_OK &&
+                dns.ip.u_addr.ip4.addr != 0) {
+                snprintf(st->dns, sizeof(st->dns), IPSTR,
+                         IP2STR(&dns.ip.u_addr.ip4));
+            }
+        }
+
+        /* 网卡没给出有效 IP 时退回事件缓存值 */
+        if (st->ip[0] == '\0') {
+            snprintf(st->ip, sizeof(st->ip), "%s", s_sta_ip);
+        }
+        if (st->gw[0] == '\0') {
+            snprintf(st->gw, sizeof(st->gw), "%s", s_sta_gw);
+        }
+
+        /* RSSI / 信道 / BSSID 只在连接状态下有意义 */
         if (s_sta_connected) {
             wifi_ap_record_t ap_info;
             if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
                 s_sta_rssi = ap_info.rssi;
+                st->channel = ap_info.primary;
+                memcpy(st->bssid, ap_info.bssid, sizeof(st->bssid));
             }
         }
         st->rssi = s_sta_rssi;
@@ -799,6 +897,68 @@ esp_err_t app_wifi_reset_cfg(void)
     s_cfg_loaded = true;
 
     ESP_LOGI(TAG, "WiFi 配置已恢复默认 (需重启或重新应用后生效)");
+    return ESP_OK;
+}
+
+/**
+ * @brief 应用 STA 的 IP 获取方式 (DHCP 或静态)
+ *
+ * ESP-IDF 的 DHCP 客户端与静态 IP 互斥: 设置静态 IP 前必须先停掉
+ * DHCP 客户端，否则 esp_netif_set_ip_info() 会被拒绝 (返回
+ * ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED)。
+ *
+ * @param cfg 配置
+ * @return ESP_OK 成功
+ */
+static esp_err_t apply_sta_ip_mode(const app_wifi_cfg_t *cfg)
+{
+    if (s_sta_netif == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (cfg->sta_static_ip) {
+        esp_netif_ip_info_t ip_info = {0};
+        ip_info.ip.addr      = htonl(parse_ipv4(cfg->sta_ip));
+        ip_info.netmask.addr = htonl(parse_ipv4(cfg->sta_mask));
+        ip_info.gw.addr      = htonl(parse_ipv4(cfg->sta_gw));
+
+        /* 必须先停 DHCP 客户端，否则 set_ip_info 会失败 */
+        esp_netif_dhcpc_stop(s_sta_netif);
+
+        esp_err_t err = esp_netif_set_ip_info(s_sta_netif, &ip_info);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "设置 STA 静态 IP 失败: %s", esp_err_to_name(err));
+            return err;
+        }
+
+        /* DNS 可选；留空时用网关作为 DNS */
+        if (cfg->sta_dns[0] != '\0') {
+            esp_netif_dns_info_t dns = {0};
+            dns.ip.u_addr.ip4.addr = htonl(parse_ipv4(cfg->sta_dns));
+            dns.ip.type = ESP_IPADDR_TYPE_V4;
+            esp_netif_set_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns);
+        } else {
+            esp_netif_dns_info_t dns = {0};
+            dns.ip.u_addr.ip4.addr = htonl(parse_ipv4(cfg->sta_gw));
+            dns.ip.type = ESP_IPADDR_TYPE_V4;
+            esp_netif_set_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns);
+        }
+
+        ESP_LOGI(TAG, "STA 静态 IP: %s/%s 网关 %s%s%s",
+                 cfg->sta_ip, cfg->sta_mask, cfg->sta_gw,
+                 cfg->sta_dns[0] ? " DNS " : "",
+                 cfg->sta_dns[0] ? cfg->sta_dns : "");
+    } else {
+        /* 切回 DHCP */
+        esp_netif_dhcpc_stop(s_sta_netif);
+        esp_err_t err = esp_netif_dhcpc_start(s_sta_netif);
+        if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+            ESP_LOGW(TAG, "启动 STA DHCP 客户端失败: %s", esp_err_to_name(err));
+            return err;
+        }
+        ESP_LOGI(TAG, "STA 使用 DHCP 获取 IP");
+    }
+
     return ESP_OK;
 }
 
@@ -1042,6 +1202,16 @@ static esp_err_t wifi_start_internal(bool wait_ready)
     s_started = true;
     snprintf(s_ssid, sizeof(s_ssid), "%s", s_cfg.ssid);
 
+    /*
+     * 应用 STA 的 IP 获取方式。
+     *
+     * 必须在 esp_wifi_start() 之后 —— 此时 STA 网卡才真正可用，
+     * DHCP 客户端的启停才有意义。
+     */
+    if (use_sta) {
+        apply_sta_ip_mode(&s_cfg);
+    }
+
     static const char *mode_names[] = { "AP", "STA", "APSTA" };
     ESP_LOGI(TAG, "WiFi 已启动: 模式=%s", mode_names[s_cfg.mode]);
 
@@ -1138,6 +1308,12 @@ esp_err_t app_wifi_stop(void)
 const char *app_wifi_get_ip(void)
 {
     return s_ip;
+}
+
+uint8_t app_wifi_get_mode(void)
+{
+    ensure_cfg_loaded();
+    return s_cfg.mode;
 }
 
 const char *app_wifi_get_ssid(void)

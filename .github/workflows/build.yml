@@ -46,6 +46,19 @@ jobs:
         uses: actions/checkout@v4
 
       # -----------------------------------------------------------------------
+      # 构建前清理可能残留的 sdkconfig
+      #
+      # sdkconfig 是 idf.py 生成的本地文件，已加入 .gitignore。
+      # 但若仓库历史中曾提交过（且目标芯片与 CI 不一致），
+      # checkout 后仍会存在，导致:
+      #   Project sdkconfig was generated for target 'esp32',
+      #   but environment variable IDF_TARGET is set to 'esp32c6'
+      # 删掉它，让 idf.py 从 sdkconfig.defaults 重新生成。
+      # -----------------------------------------------------------------------
+      - name: Clean stale sdkconfig
+        run: rm -f sdkconfig sdkconfig.old
+
+      # -----------------------------------------------------------------------
       # IDF 环境
       #
       # 用官方 Docker 镜像而非 espressif/esp-idf-ci-action —— 后者会自己

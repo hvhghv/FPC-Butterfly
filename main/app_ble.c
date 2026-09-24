@@ -22,6 +22,7 @@
 #include "soc/soc_caps.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -30,6 +31,10 @@
 #include "app_ble.h"
 
 static const char *TAG = "app_ble";
+
+/** NVS 命名空间与键 (存放配对码) */
+#define BLE_NVS_NAMESPACE   "blecfg"
+#define BLE_NVS_KEY_PIN     "pin"
 
 /*
  * 芯片能力检查。
@@ -44,6 +49,9 @@ esp_err_t app_ble_stop(void)       { return ESP_OK; }
 bool      app_ble_is_running(void) { return false; }
 bool      app_ble_is_connected(void) { return false; }
 esp_err_t app_ble_disconnect(void) { return ESP_ERR_INVALID_STATE; }
+esp_err_t app_ble_set_pin(const char *pin) { (void)pin; return ESP_ERR_NOT_SUPPORTED; }
+bool      app_ble_pairing_enabled(void)    { return false; }
+const char *app_ble_get_pin(void)          { return ""; }
 
 #else  /* BLE 可用 */
 
@@ -52,6 +60,8 @@ esp_err_t app_ble_disconnect(void) { return ESP_ERR_INVALID_STATE; }
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
 #include "host/util/util.h"
+#include "host/ble_store.h"
+#include "store/config/ble_store_config.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
@@ -105,6 +115,125 @@ static uint8_t          s_own_addr_type = 0;
 
 /** TX 特征值句柄 (notify 时需要) */
 static uint16_t         s_tx_val_handle = 0;
+
+/** 配对码 (6 位数字)；空串表示不启用配对 */
+static char             s_pin[APP_BLE_PIN_LEN + 1] = "";
+
+/** 配对码是否已从 NVS 加载过 */
+static bool             s_pin_loaded = false;
+
+/* ---------------------------------------------------------------------------
+ * 配对码管理
+ * ------------------------------------------------------------------------- */
+
+/** 校验是否为 6 位纯数字 */
+static bool pin_valid(const char *pin)
+{
+    if (pin == NULL) {
+        return false;
+    }
+    for (int i = 0; i < APP_BLE_PIN_LEN; i++) {
+        if (pin[i] < '0' || pin[i] > '9') {
+            return false;
+        }
+    }
+    return pin[APP_BLE_PIN_LEN] == '\0';
+}
+
+/** 从 NVS 加载配对码 (首次调用时) */
+static void ensure_pin_loaded(void)
+{
+    if (s_pin_loaded) {
+        return;
+    }
+    s_pin_loaded = true;
+
+    nvs_handle_t h;
+    if (nvs_open(BLE_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return;     /* 无配置，保持不启用配对 */
+    }
+
+    size_t len = sizeof(s_pin);
+    if (nvs_get_str(h, BLE_NVS_KEY_PIN, s_pin, &len) != ESP_OK) {
+        s_pin[0] = '\0';
+    }
+    nvs_close(h);
+
+    if (s_pin[0] != '\0') {
+        ESP_LOGI(TAG, "已从 NVS 加载配对码 (启用配对)");
+    }
+}
+
+/** 把配对码写入 NVS (空串表示清除) */
+static esp_err_t save_pin_to_nvs(const char *pin)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(BLE_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "打开 NVS 失败: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (pin[0] == '\0') {
+        err = nvs_erase_key(h, BLE_NVS_KEY_PIN);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            err = ESP_OK;   /* 本来就没有，视为成功 */
+        }
+    } else {
+        err = nvs_set_str(h, BLE_NVS_KEY_PIN, pin);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "保存配对码失败: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
+esp_err_t app_ble_set_pin(const char *pin)
+{
+    /*
+     * 传 NULL 或空串 = 禁用配对。
+     * 这里把 NULL 归一化为空串处理，便于上层直接传 NULL 关闭。
+     */
+    const char *p = (pin != NULL) ? pin : "";
+
+    if (p[0] != '\0' && !pin_valid(p)) {
+        ESP_LOGW(TAG, "配对码格式非法 (需 6 位数字)");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ensure_pin_loaded();
+
+    snprintf(s_pin, sizeof(s_pin), "%s", p);
+
+    esp_err_t err = save_pin_to_nvs(s_pin);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (s_pin[0] == '\0') {
+        ESP_LOGI(TAG, "已禁用 BLE 配对 (客户端可直接连接)");
+    } else {
+        ESP_LOGI(TAG, "已启用 BLE 配对，配对码: %s", s_pin);
+    }
+    return ESP_OK;
+}
+
+bool app_ble_pairing_enabled(void)
+{
+    ensure_pin_loaded();
+    return s_pin[0] != '\0';
+}
+
+const char *app_ble_get_pin(void)
+{
+    ensure_pin_loaded();
+    return s_pin;
+}
 
 /** 命令队列与任务 */
 static QueueHandle_t    s_cmd_queue  = NULL;
@@ -453,6 +582,54 @@ static int gap_event_handler(struct ble_gap_event *event, void *arg)
                  (unsigned)event->subscribe.cur_notify);
         return 0;
 
+    /*
+     * 配对码显示事件。
+     *
+     * 设备作为 DisplayOnly 方，需要在这里把配对码告知用户。
+     * 我们的配对码是用户预先设定的固定值，因此直接回填 s_pin，
+     * 让协议栈用它参与密钥协商。
+     */
+    case BLE_GAP_EVENT_PASSKEY_ACTION: {
+        struct ble_sm_io io = {0};
+
+        if (event->passkey.params.action == BLE_SM_IOACT_DISP) {
+            io.action = BLE_SM_IOACT_DISP;
+            io.passkey = (uint32_t)strtoul(s_pin, NULL, 10);
+            ESP_LOGI(TAG, "配对请求: 请输入配对码 %s", s_pin);
+            ble_sm_inject_io(event->passkey.conn_handle, &io);
+        } else if (event->passkey.params.action == BLE_SM_IOACT_NUMCMP) {
+            /*
+             * 数字比较: 客户端会显示 6 位数字，需与设备侧一致。
+             * 我们的配对码固定，因此要求客户端显示的正是它。
+             */
+            io.action = BLE_SM_IOACT_NUMCMP;
+            io.numcmp_accept = 1;
+            ESP_LOGI(TAG, "配对请求: 请在客户端确认配对码 %s", s_pin);
+            ble_sm_inject_io(event->passkey.conn_handle, &io);
+        }
+        return 0;
+    }
+
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        ESP_LOGI(TAG, "加密状态变更: status=%d (0=已加密)",
+                 event->enc_change.status);
+        return 0;
+
+    case BLE_GAP_EVENT_REPEAT_PAIRING:
+        /*
+         * 重复配对: 客户端保存了旧密钥而设备已清除绑定。
+         * 删除旧绑定后允许重新配对。
+         */
+        ESP_LOGI(TAG, "客户端重复配对请求，删除旧绑定后重新配对");
+        {
+            struct ble_gap_conn_desc desc;
+            if (ble_gap_conn_find(event->repeat_pairing.conn_handle,
+                                  &desc) == 0) {
+                ble_store_util_delete_peer(&desc.peer_id_addr);
+            }
+        }
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+
     default:
         return 0;
     }
@@ -550,12 +727,33 @@ esp_err_t app_ble_start(void)
     ble_hs_cfg.reset_cb = ble_on_reset;
 
     /*
-     * 不启用配对绑定。
+     * 配对与加密。
      *
-     * 本设备是本地控制用途，绑定会占用 NVS 空间并增加连接复杂度。
-     * 若需限制访问，应在应用层做 (例如连接后要求口令)。
+     * 启用配对码时用 Passkey Entry: 客户端连接后需输入 6 位数字。
+     * 显示能力设为 DisplayOnly —— 设备是"显示方"，客户端是"输入方"，
+     * 因此配对码由设备固定 (而非随机生成)，便于用户预先知道。
+     *
+     * 未启用配对码时用 NoInputNoOutput，客户端可直接连接，
+     * 与之前行为一致。
      */
-    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ensure_pin_loaded();
+
+    if (s_pin[0] != '\0') {
+        ble_hs_cfg.sm_io_cap         = BLE_SM_IO_CAP_DISP_ONLY;
+        ble_hs_cfg.sm_mitm           = 1;   /* 要求中间人保护 (即需配对码) */
+        ble_hs_cfg.sm_bonding        = 1;   /* 绑定，避免每次重输 */
+        ble_hs_cfg.sm_sc             = 1;   /* LE Secure Connections */
+        ble_hs_cfg.sm_our_key_dist   = BLE_SM_PAIR_KEY_DIST_ENC |
+                                       BLE_SM_PAIR_KEY_DIST_ID;
+        ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC |
+                                       BLE_SM_PAIR_KEY_DIST_ID;
+        ESP_LOGI(TAG, "BLE 配对已启用 (配对码 %s)", s_pin);
+    } else {
+        ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+        ble_hs_cfg.sm_mitm   = 0;
+        ble_hs_cfg.sm_bonding = 0;
+        ESP_LOGI(TAG, "BLE 配对未启用 (客户端可直接连接)");
+    }
 
     nimble_port_freertos_init(ble_host_task);
 

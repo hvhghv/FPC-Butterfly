@@ -76,6 +76,18 @@ typedef struct {
     /* --- STA (连路由器) 参数 --- */
     char     sta_ssid[APP_WIFI_SSID_MAX]; /*!< 要连接的路由器 SSID */
     char     sta_password[APP_WIFI_PASS_MAX]; /*!< 路由器密码 (空 = 开放网络) */
+
+    /*
+     * STA 静态 IP。
+     *
+     * sta_static_ip 为 false 时用 DHCP (默认)；为 true 时使用下面四项。
+     * 四项均为点分十进制字符串，便于直接存 NVS 与前端编辑。
+     */
+    bool     sta_static_ip;             /*!< true = 静态 IP，false = DHCP */
+    char     sta_ip[APP_WIFI_IP_MAX];   /*!< 静态 IP 地址 */
+    char     sta_mask[APP_WIFI_IP_MAX]; /*!< 子网掩码，如 255.255.255.0 */
+    char     sta_gw[APP_WIFI_IP_MAX];   /*!< 网关地址 */
+    char     sta_dns[APP_WIFI_IP_MAX];  /*!< DNS 服务器，可留空 */
 } app_wifi_cfg_t;
 
 /**
@@ -84,10 +96,15 @@ typedef struct {
 typedef struct {
     bool     enabled;                   /*!< 是否启用了 STA */
     bool     connected;                 /*!< 是否已连上路由器 */
+    bool     static_ip;                 /*!< 是否使用静态 IP */
     char     ssid[APP_WIFI_SSID_MAX];   /*!< 已连接(或正在连接)的 SSID */
-    char     ip[APP_WIFI_IP_MAX];       /*!< 从路由器获取的 IP，未连接时为 "0.0.0.0" */
+    char     ip[APP_WIFI_IP_MAX];       /*!< 当前 IP，未连接时为 "0.0.0.0" */
     char     gw[APP_WIFI_IP_MAX];       /*!< 网关地址 */
+    char     mask[APP_WIFI_IP_MAX];     /*!< 子网掩码 */
+    char     dns[APP_WIFI_IP_MAX];      /*!< DNS 服务器 */
     int8_t   rssi;                      /*!< 信号强度 dBm，未连接时为 0 */
+    uint8_t  channel;                   /*!< 当前信道，未连接时为 0 */
+    uint8_t  bssid[6];                  /*!< 路由器 MAC，未连接时全 0 */
 } app_wifi_sta_status_t;
 
 /**
@@ -204,6 +221,13 @@ esp_err_t app_wifi_start_nonblocking(void);
  * @return ESP_OK 成功
  */
 esp_err_t app_wifi_stop(void);
+
+/**
+ * @brief 查询当前工作模式
+ *
+ * @return app_wifi_mode_t；未初始化时返回 APP_WIFI_MODE_AP
+ */
+uint8_t app_wifi_get_mode(void);
 
 /**
  * @brief 获取 AP 的 IP 地址字符串

@@ -241,8 +241,9 @@ iap> app boot
 - **一键同步**：把亮度 / 效果 / 周期 / PWM 频率应用到全部灯珠
 - **PWM 频率**：100-40000 Hz 可调（LEDC 与 MCPWM 同步改频）
 - **WiFi 设置**：模式 (AP/STA/APSTA) / SSID / 密码 / 信道 / 连接数 / 隐藏 / IP，
-  以及连接路由器（含扫描周边热点、手动重连）
+  以及连接路由器（含扫描周边热点、静态 IP、手动重连）
 - **连接方式**：WiFi (HTTP) / 蓝牙 (BLE) 通道切换，页面自动适配
+- **设备状态**：WiFi 热点 / 路由器 / 蓝牙 / 系统四张状态卡，含信号强度与信道
 - **配置导入 / 导出**：导出为 JSON 文件、显示为文本、从文件或文本框导入；
   可选「包含 WiFi 密码」用于完整迁移（含安全警告与二次确认）
 - **设备信息**：芯片型号、IDF 版本、程序版本、MAC、空闲堆、运行时间、
@@ -482,6 +483,52 @@ BLE 通道使用同一套命令名：
 | POST | `/api/reboot` | `{}` | 重启设备 |
 | POST | `/api/upgrade` | `{}` | 重启进入 IAP 下载模式 |
 
+### 设备状态查询
+
+`GET /api/status` 返回灯珠状态、系统信息、WiFi 与蓝牙状态：
+
+```json
+{
+  "chip": "ESP32-C6", "cores": 1, "idf": "v6.0.3",
+  "app": "led_butterfly v1", "mac": "AA:BB:CC:DD:EE:FF",
+  "heap": 123456, "uptime": 3725,
+  "boottarget": 1, "iapver": "1.0.0", "cfgaddr": 0,
+
+  "ssid": "ESP-LED", "ip": "192.168.4.1", "clients": 2,
+
+  "ble": {
+    "running": true, "connected": true, "name": "Butterfly-LED"
+  },
+
+  "wifi": {
+    "mode": 2, "ap_clients": 2,
+    "sta_enabled": true, "sta_connected": true, "sta_static": true,
+    "sta_ssid": "HomeWiFi", "sta_ip": "192.168.1.100",
+    "sta_gw": "192.168.1.1", "sta_mask": "255.255.255.0",
+    "sta_dns": "8.8.8.8", "sta_rssi": -52, "sta_channel": 6
+  },
+
+  "count": 4, "leds": [...],
+  "brightness": 255, "effect": "none", "period": 2000,
+  "freq": 5000, "invert": false, "off": false
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `heap` | 空闲堆字节数 |
+| `uptime` | 运行秒数 |
+| `ble.running` | BLE 服务是否启动 |
+| `ble.connected` | 是否有客户端已连接 |
+| `wifi.mode` | 0=AP 1=STA 2=APSTA |
+| `wifi.sta_connected` | 是否已连上路由器 |
+| `wifi.sta_static` | 是否使用静态 IP |
+| `wifi.sta_rssi` | 信号强度 dBm（未连接为 0） |
+| `wifi.sta_channel` | 当前信道（未连接为 0） |
+
+> Web 界面「设备信息」卡片用四张状态卡直观展示这些数据：
+> WiFi 热点、路由器连接、蓝牙、系统，各带状态指示灯。
+
 ### WiFi 配置
 
 支持 **AP / STA / APSTA** 三种模式：
@@ -513,6 +560,34 @@ BLE 通道使用同一套命令名：
 | `ip` | 合法 IPv4 | AP 自身地址，必须以 `.1` 结尾 |
 | `sta_ssid` | 1-32 字符 | 路由器 SSID（仅 STA 模式校验） |
 | `sta_password` | 8-63 字符，或空串 | 路由器密码；空串 = 开放网络 |
+| `sta_static` | 0 / 1 | STA 是否用静态 IP（0 = DHCP，默认） |
+| `sta_ip` | 合法 IPv4 | 静态 IP |
+| `sta_mask` | 合法 IPv4 | 子网掩码 |
+| `sta_gw` | 合法 IPv4 | 网关 |
+| `sta_dns` | 合法 IPv4 或空 | DNS；留空则用网关 |
+
+#### STA 静态 IP
+
+`sta_static` 为 `1` 时使用静态 IP，校验规则：
+
+- `sta_ip` / `sta_mask` / `sta_gw` **三项必填**
+- IP **不能与网关相同**
+- IP 与网关**必须在同一子网**（`ip & mask == gw & mask`）
+- `sta_dns` 可留空，此时用网关作 DNS
+
+```bash
+# 启用静态 IP
+curl -X POST -d '{"sta_static":1,"sta_ip":"192.168.1.100",
+                  "sta_mask":"255.255.255.0","sta_gw":"192.168.1.1"}' \
+  http://192.168.4.1/api/wifi
+
+# 切回 DHCP
+curl -X POST -d '{"sta_static":0}' http://192.168.4.1/api/wifi
+```
+
+> 实现上，静态 IP 需先 `esp_netif_dhcpc_stop()` 再
+> `esp_netif_set_ip_info()` —— IDF 的 DHCP 客户端与静态 IP 互斥，
+> 不停 DHCP 直接设 IP 会返回 `ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED`。
 
 - 配置写入 NVS（命名空间 `wificfg`），**掉电保存**
 - 修改 SSID / 密码 / 信道 / 模式会**断开当前连接**，需用新参数重新连接

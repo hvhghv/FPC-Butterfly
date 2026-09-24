@@ -144,6 +144,18 @@ th{background:#1a1f2b;width:36%;font-weight:600}
 需 Chrome / Edge / Opera，且页面须为 https 或 localhost。<br>
 iOS 与 Firefox 不支持 Web Bluetooth。</div>
 </div>
+
+<div class="adv">
+<div class="sh" style="font-size:12px;color:var(--dim);margin-bottom:6px">蓝牙设置</div>
+<div class="frow"><label>配对码</label>
+<div style="display:flex;gap:8px;min-width:0">
+<input type="text" id="blepin" maxlength="6" placeholder="6 位数字，留空 = 免配对"
+style="flex:1;min-width:0">
+<button class="gray" onclick="saveBlePin()" style="margin:0;padding:6px 12px;flex:none">保存</button>
+</div></div>
+<div class="fnote" style="margin:-2px 0 4px 64px">
+启用后客户端连接需输入该码；清空并保存可关闭配对</div>
+</div>
 </div>
 
 <div class="card">
@@ -176,6 +188,17 @@ iOS 与 Firefox 不支持 Web Bluetooth。</div>
 <button class="gray" onclick="scanWifi()" style="margin:0;padding:6px 12px;flex:none">扫描</button>
 </div></div>
 <div class="frow"><label>密码</label><input type="text" id="wstapass" maxlength="63" placeholder="留空 = 开放网络"></div>
+<div class="frow"><label>IP 方式</label>
+<label class="sw"><input type="checkbox" id="wstatic" onchange="onStaticChange()">
+<span>使用静态 IP（默认 DHCP）</span></label></div>
+<div id="wstaticbox" style="display:none">
+<div class="frow"><label>IP</label><input type="text" id="wstaip" placeholder="192.168.1.100"></div>
+<div class="frow"><label>掩码</label><input type="text" id="wstamask" placeholder="255.255.255.0"></div>
+<div class="frow"><label>网关</label><input type="text" id="wstagw" placeholder="192.168.1.1"></div>
+<div class="frow"><label>DNS</label><input type="text" id="wstadns" placeholder="留空 = 使用网关"></div>
+<div class="fnote" style="margin:-2px 0 4px 64px">
+IP 需与网关同网段，且不能与网关相同</div>
+</div>
 <div id="wscanbox" style="display:none;margin-top:6px">
 <div class="hint" style="font-size:11px;color:var(--dim);margin-bottom:4px">点击选择：</div>
 <div id="wscanlist" style="max-height:150px;overflow:auto"></div>
@@ -221,11 +244,30 @@ resize:vertical;display:none"></textarea>
 
 <div class="card">
 <h2>设备信息</h2>
-<table id="info"></table>
+<div class="grid" id="statgrid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+<div class="led"><div class="hd"><span class="nm">WiFi 热点</span><span class="ps" id="st_apdot"></span></div>
+<div class="ps" id="st_ap">—</div></div>
+<div class="led"><div class="hd"><span class="nm">路由器连接</span><span class="ps" id="st_stadot"></span></div>
+<div class="ps" id="st_sta">—</div></div>
+<div class="led"><div class="hd"><span class="nm">蓝牙</span><span class="ps" id="st_bledot"></span></div>
+<div class="ps" id="st_ble">—</div></div>
+<div class="led"><div class="hd"><span class="nm">系统</span><span class="ps"></span></div>
+<div class="ps" id="st_sys">—</div></div>
+</div>
+<table id="info" style="margin-top:12px"></table>
 <div style="margin-top:10px">
 <button class="gray" onclick="refresh()">刷新状态</button>
 <button class="gray" onclick="reboot()">重启设备</button>
 <button class="danger" onclick="upgrade()">进入 IAP 下载模式</button>
+</div>
+
+<div class="adv">
+<div class="sh" style="font-size:12px;color:var(--dim);margin-bottom:6px">
+服务开关 <span class="ps">（关闭后需重新启用才能使用对应通道）</span></div>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<button class="gray" id="btnwifi" onclick="toggleWifi()">关闭 WiFi</button>
+<button class="gray" id="btnble" onclick="toggleBle()">关闭蓝牙</button>
+</div>
 </div>
 </div>
 
@@ -392,7 +434,16 @@ tip.textContent=m===1?'⚠️ 连不上路由器将无法访问页面':'';
 /* 未启用的区域置灰，避免误改 */
 ['wssid','wpass','wchan','wmax','whid','wip'].forEach(id=>{
 const el=document.getElementById(id); if(el) el.disabled=!apOn;});
-['wstassid','wstapass'].forEach(id=>{
+['wstassid','wstapass','wstatic'].forEach(id=>{
+const el=document.getElementById(id); if(el) el.disabled=!staOn;});
+onStaticChange();}
+
+/* 静态 IP 开关: 展开/收起地址输入区 */
+function onStaticChange(){
+const on=document.getElementById('wstatic').checked;
+const staOn=!document.getElementById('wstatic').disabled;
+document.getElementById('wstaticbox').style.display=(on&&staOn)?'block':'none';
+['wstaip','wstamask','wstagw','wstadns'].forEach(id=>{
 const el=document.getElementById(id); if(el) el.disabled=!staOn;});}
 
 async function loadWifi(){
@@ -417,10 +468,20 @@ wifiStaPassSet=!!st.secure;
 document.getElementById('wstapass').value='';
 document.getElementById('wstapass').placeholder=
 wifiStaPassSet?'留空 = 不修改':'留空 = 开放网络';
+/* 静态 IP: 优先显示已配置值，未配置时用当前生效值做占位提示 */
+document.getElementById('wstatic').checked=!!st.static;
+document.getElementById('wstaip').value=st.cfg_ip||'';
+document.getElementById('wstamask').value=st.cfg_mask||'';
+document.getElementById('wstagw').value=st.cfg_gw||'';
+document.getElementById('wstadns').value=st.cfg_dns||'';
+document.getElementById('wstaip').placeholder=st.ip&&st.ip!=='0.0.0.0'?st.ip:'192.168.1.100';
+document.getElementById('wstamask').placeholder=st.mask||'255.255.255.0';
+document.getElementById('wstagw').placeholder=st.gw&&st.gw!=='0.0.0.0'?st.gw:'192.168.1.1';
+/* 状态徽标 */
 const badge=document.getElementById('wstastat');
 if(!st.enabled){badge.textContent='(未启用)';}
 else if(st.connected){
-badge.textContent='已连接 '+st.ip+' 信号 '+st.rssi+' dBm';}
+badge.textContent='已连接 '+st.ip+' ('+(st.static?'静态':'DHCP')+') 信号 '+st.rssi+' dBm';}
 else{badge.textContent='未连接';}
 onModeChange();
 return d;}
@@ -449,11 +510,32 @@ if(!s){log('启用 STA 时必须填写路由器名称',true);return;}
 obj.sta_ssid=s;
 const sp=document.getElementById('wstapass').value;
 if(sp===''&&wifiStaPassSet){log('路由器密码留空，保持原密码不变');}
-if(sp!==''||!wifiStaPassSet){obj.sta_password=sp;}}
+if(sp!==''||!wifiStaPassSet){obj.sta_password=sp;}
+
+/* --- 静态 IP --- */
+const useStatic=document.getElementById('wstatic').checked;
+obj.sta_static=useStatic?1:0;
+if(useStatic){
+const ip=document.getElementById('wstaip').value.trim();
+const mask=document.getElementById('wstamask').value.trim();
+const gw=document.getElementById('wstagw').value.trim();
+const dns=document.getElementById('wstadns').value.trim();
+if(!ip||!mask||!gw){
+log('静态 IP 模式下，IP / 掩码 / 网关都必须填写',true);return;}
+/* 前端先做基础格式检查，避免往返一次才报错 */
+const ipre=/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+for(const [n,v] of [['IP',ip],['掩码',mask],['网关',gw]]){
+if(!ipre.test(v)||v.split('.').some(x=>+x>255)){
+log(n+' 格式不正确: '+v,true);return;}}
+if(dns&&(!ipre.test(dns)||dns.split('.').some(x=>+x>255))){
+log('DNS 格式不正确: '+dns,true);return;}
+if(ip===gw){log('IP 不能与网关相同',true);return;}
+obj.sta_ip=ip;obj.sta_mask=mask;obj.sta_gw=gw;
+if(dns)obj.sta_dns=dns;else obj.sta_dns='';}}
 
 const r=await post('/api/wifi',obj);
 if(r){log('WiFi 已更新: 模式='+mode+' 热点='+(r.ssid||'-')+
-(staOn?' 路由器='+r.sta_ssid:''));}}
+(staOn?' 路由器='+r.sta_ssid+(r.sta_static?' (静态 '+r.sta_ip+')':' (DHCP)'):''));}}
 
 async function scanWifi(){
 const box=document.getElementById('wscanbox');
@@ -486,6 +568,58 @@ async function resetWifi(){
 if(!confirm('确定恢复默认 WiFi 配置？\n\n设备将重启，热点变为 ESP-LED / 12345678。'))return;
 await post('/api/wifi/reset',{});
 log('已恢复默认配置，设备重启中...');}
+
+/* --- 服务开关 (二次确认) --- */
+let svcWifiOn=true, svcBleOn=true;
+
+async function toggleWifi(){
+if(svcWifiOn){
+/* 关闭 WiFi 是危险操作 —— 会立即断开当前连接 */
+if(!confirm('确定关闭 WiFi？\n\n⚠️ 当前连接会立即断开。\n'+
+'若蓝牙也未启用，设备将只能通过串口恢复。\n\n确定继续？'))return;
+const r=await post('/api/wifi/enable',{enabled:0,confirm:1});
+if(r){svcWifiOn=false;log('WiFi 已关闭'+(r.warning?'（'+r.warning+'）':''));
+updateSvcBtns();}
+}else{
+const r=await post('/api/wifi/enable',{enabled:1,confirm:1});
+if(r){svcWifiOn=true;log('WiFi 已启用');updateSvcBtns();}}}
+
+async function toggleBle(){
+if(svcBleOn){
+if(!confirm('确定关闭蓝牙？\n\n关闭后需通过 WiFi 或串口重新启用。'))return;
+const r=await post('/api/ble/enable',{enabled:0,confirm:1});
+if(r){svcBleOn=false;log('蓝牙已关闭');updateSvcBtns();}
+}else{
+const r=await post('/api/ble/enable',{enabled:1,confirm:1});
+if(r){svcBleOn=true;log('蓝牙已启用');updateSvcBtns();}}}
+
+function updateSvcBtns(){
+const w=document.getElementById('btnwifi'), b=document.getElementById('btnble');
+w.textContent=svcWifiOn?'关闭 WiFi':'启用 WiFi';
+b.textContent=svcBleOn?'关闭蓝牙':'启用蓝牙';
+/* 关闭状态用红色提示，启用状态用灰色 */
+w.className=svcWifiOn?'gray':'danger';
+b.className=svcBleOn?'gray':'danger';}
+
+/* --- 蓝牙配对码 --- */
+async function loadBlePin(){
+const r=await post('/api/ble/pin',{get:1});
+if(!r)return;
+document.getElementById('blepin').value=r.pin||'';
+document.getElementById('blepin').placeholder=
+r.enabled?'当前已启用配对':'6 位数字，留空 = 免配对';
+log('配对码状态: '+(r.enabled?'已启用 ('+r.pin+')':'未启用'));}
+
+async function saveBlePin(){
+const pin=document.getElementById('blepin').value.trim();
+if(pin&&!/^\d{6}$/.test(pin)){log('配对码必须是 6 位数字',true);return;}
+const msg=pin?'确定启用配对码 '+pin+'？\n\n客户端连接时需输入该码。'
+:'确定关闭配对？\n\n客户端将可直接连接，无需配对码。';
+if(!confirm(msg))return;
+const r=await post('/api/ble/pin',{pin:pin});
+if(r){log(pin?'配对码已设为 '+r.pin:'配对已关闭');
+document.getElementById('blepin').placeholder=
+r.enabled?'当前已启用配对':'6 位数字，留空 = 免配对';}}
 
 /* --- 配置导入 / 导出 --- */
 let cfgCache=null;   /* 最近一次导出的配置文本 */
@@ -604,6 +738,9 @@ const CMD_MAP={
 '/api/wifi/scan':'wifi.scan',
 '/api/wifi/reconnect':'wifi.reconnect',
 '/api/wifi/reset':'wifi.reset',
+'/api/wifi/enable':'wifi.enable',
+'/api/ble/enable':'ble.enable',
+'/api/ble/pin':'ble.pin',
 '/api/config':'config.import',
 '/api/config/export':'config.export'};
 
@@ -786,12 +923,56 @@ document.getElementById('bri').value=d.brightness;briV();
 document.getElementById('eff').value=d.effect;
 document.getElementById('per').value=d.period;
 document.getElementById('frq').value=d.freq;
+/*
+ * 先取出 wifi / ble 子对象 —— 下面的 rows 与状态卡片都要用，
+ * 必须在使用前声明，否则会触发 TDZ 错误
+ * (Cannot access 'bl' before initialization)。
+ */
+const w=d.wifi||{}, bl=d.ble||{};
+
 const rows=[['芯片',d.chip],['IDF 版本',d.idf],['程序版本',d.app],
 ['MAC 地址',d.mac],['空闲堆',d.heap+' 字节'],['运行时间',d.uptime+' 秒'],
-['启动目标',d.boottarget],['IAP 版本',d.iapver],['AP SSID',d.ssid],
-['AP 地址',d.ip],['接入客户端',d.clients+' 个']];
+['启动目标',d.boottarget],['IAP 版本',d.iapver],
+['AP SSID',d.ssid],['AP 地址',d.ip],['接入客户端',d.clients+' 个'],
+['蓝牙名称',bl.name||'—'],['蓝牙状态',bl.running?(bl.connected?'已连接':'广播中'):'未启动'],
+['路由器 SSID',w.sta_ssid||'—'],['路由器 IP',w.sta_ip||'—'],
+['路由器网关',w.sta_gw||'—'],['子网掩码',w.sta_mask||'—'],
+['DNS',w.sta_dns||'—'],['信号强度',w.sta_connected?w.sta_rssi+' dBm':'—']];
 document.getElementById('info').innerHTML=rows.map(x=>
-'<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>').join('');}
+'<tr><th>'+x[0]+'</th><td>'+x[1]+'</td></tr>').join('');
+/* --- 状态卡片 --- */
+const dot=(ok)=>ok?'<span class="dot" style="margin:0"></span>':'<span class="dot err" style="margin:0"></span>';
+
+/* WiFi 热点 */
+document.getElementById('st_apdot').innerHTML=dot(true);
+document.getElementById('st_ap').textContent=
+'SSID '+d.ssid+' · '+d.ip+' · '+d.clients+' 个客户端';
+
+/* 路由器 */
+document.getElementById('st_stadot').innerHTML=dot(!!w.sta_connected);
+if(!w.sta_enabled){
+document.getElementById('st_sta').textContent='未启用 (当前为纯热点模式)';}
+else if(w.sta_connected){
+document.getElementById('st_sta').textContent=
+w.sta_ssid+' · '+w.sta_ip+' · '+(w.sta_static?'静态':'DHCP')+
+' · 信号 '+w.sta_rssi+' dBm · 信道 '+w.sta_channel;}
+else{document.getElementById('st_sta').textContent=
+'未连接 ('+w.sta_ssid+')'+(w.sta_static?' · 静态 '+w.sta_ip:'');}
+
+/* 蓝牙 */
+document.getElementById('st_bledot').innerHTML=dot(!!bl.connected);
+document.getElementById('st_ble').textContent=
+!bl.running?'未启动':(bl.connected?'已连接 · '+bl.name:'广播中 · '+bl.name);
+
+/* 系统 */
+document.getElementById('st_sys').textContent=
+'运行 '+d.uptime+' 秒 · 空闲堆 '+d.heap+' 字节';
+
+/* 同步服务开关按钮状态 (设备可能是被其他客户端改的) */
+const bleOn=!!(bl.running);
+const wifiOn=(d.ssid&&d.ssid.length>0);
+if(bleOn!==svcBleOn||wifiOn!==svcWifiOn){
+svcBleOn=bleOn;svcWifiOn=wifiOn;updateSvcBtns();}}
 catch(e){log('刷新失败: '+e,true);
 document.getElementById('dot').className='dot err';}}
 
@@ -801,7 +982,7 @@ function upgrade(){if(!confirm('确定重启进入 IAP 下载模式？\n\n'+
 '设备将重启并停留在 IAP，可用 IAP 页面重新烧录用户程序。'))return;
 post('/api/upgrade',{});log('正在进入 IAP 下载模式...');}
 
-buildLeds();refresh();loadWifi();setInterval(refresh,5000);
+buildLeds();refresh();loadWifi();loadBlePin();setInterval(refresh,5000);
 
 </script>
 </body>

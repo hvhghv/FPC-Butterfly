@@ -3,6 +3,16 @@
 build
 __pycache__
 
+# --- ESP-IDF 生成文件 -----------------------------------------------------
+# sdkconfig 由 idf.py 根据 sdkconfig.defaults 自动生成，
+# 且包含本地路径与目标芯片信息，不应提交。
+# 提交它会导致 CI 报错:
+#   Project sdkconfig was generated for target 'esp32',
+#   but environment variable IDF_TARGET is set to 'esp32c6'
+# 请只维护 sdkconfig.defaults。
+sdkconfig
+sdkconfig.old
+
 # --- 构建产物 -------------------------------------------------------------
 # build_user_app.py 的输出与 CI 中间目录
 *_flash.bin

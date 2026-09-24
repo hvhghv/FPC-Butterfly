@@ -43,6 +43,7 @@
 #include "iap_user_api.h"
 #include "iap_boot_param.h"
 #include "app_wifi.h"
+#include "app_ble.h"
 #include "led_ctrl.h"
 #include "app_cmd.h"
 
@@ -234,13 +235,21 @@ static esp_err_t cmd_status(char *out, size_t out_len)
      * 固定字段部分的最大长度估算:
      *   chip(16) + cores(4) + idf(16) + app(48) + mac(24) + heap(12)
      *   + uptime(16) + boottarget(4) + iapver(16) + cfgaddr(12)
-     *   + ssid(40) + ip(20) + clients(4) + 键名与标点(约 180)
-     *   ≈ 400 字节，取 512 留足余量。
+     *   + ssid(40) + ip(20) + clients(4)
+     *   + ble 对象(约 80) + wifi 对象(约 260)
+     *   + 键名与标点(约 200)
+     *   ≈ 800 字节，取 1024 留足余量。
      */
-    const size_t fixed_max = 512;
+    const size_t fixed_max = 1024;
     size_t need = leds_len + fixed_max + 2;
     if (need > out_len) {
         return reply_error(out, out_len, "响应过长");
+    }
+
+    /* --- WiFi 状态 --- */
+    app_wifi_sta_status_t st;
+    if (app_wifi_get_sta_status(&st) != ESP_OK) {
+        memset(&st, 0, sizeof(st));
     }
 
     int n = snprintf(out, out_len,
@@ -249,7 +258,13 @@ static esp_err_t cmd_status(char *out, size_t out_len)
                      "\"heap\":%" PRIu32 ",\"uptime\":%" PRIu64 ","
                      "\"boottarget\":%u,\"iapver\":\"%s\","
                      "\"cfgaddr\":%" PRIu32 ","
-                     "\"ssid\":\"%s\",\"ip\":\"%s\",\"clients\":%u,",
+                     "\"ssid\":\"%s\",\"ip\":\"%s\",\"clients\":%u,"
+                     "\"ble\":{\"running\":%s,\"connected\":%s,\"name\":\"%s\"},"
+                     "\"wifi\":{\"mode\":%u,\"ap_clients\":%u,"
+                     "\"sta_enabled\":%s,\"sta_connected\":%s,"
+                     "\"sta_static\":%s,\"sta_ssid\":\"%s\","
+                     "\"sta_ip\":\"%s\",\"sta_gw\":\"%s\",\"sta_mask\":\"%s\","
+                     "\"sta_dns\":\"%s\",\"sta_rssi\":%d,\"sta_channel\":%u},",
                      model, chip.cores, esp_get_idf_version(),
                      desc->project_name, desc->version,
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
@@ -257,7 +272,17 @@ static esp_err_t cmd_status(char *out, size_t out_len)
                      (uint64_t)(esp_timer_get_time() / 1000000),
                      (unsigned)boot_target, iap_ver_str, cfg_addr,
                      app_wifi_get_ssid(), app_wifi_get_ip(),
-                     app_wifi_get_sta_count());
+                     app_wifi_get_sta_count(),
+                     app_ble_is_running() ? "true" : "false",
+                     app_ble_is_connected() ? "true" : "false",
+                     APP_BLE_DEVICE_NAME,
+                     app_wifi_get_mode(),
+                     app_wifi_get_sta_count(),
+                     st.enabled ? "true" : "false",
+                     st.connected ? "true" : "false",
+                     st.static_ip ? "true" : "false",
+                     st.ssid, st.ip, st.gw, st.mask, st.dns,
+                     (int)st.rssi, st.channel);
 
     /* 必须检查 snprintf 返回值，否则截断时会越界写 */
     if (n < 0 || (size_t)n + leds_len + 2 > out_len) {
@@ -654,17 +679,26 @@ static esp_err_t cmd_wifi_get(char *out, size_t out_len)
              "{\"ok\":true,\"mode\":%u,"
              "\"ssid\":\"%s\",\"channel\":%u,\"maxconn\":%u,"
              "\"hidden\":%s,\"ip\":\"%s\",\"secure\":%s,\"passlen\":%u,"
-             "\"sta\":{\"enabled\":%s,\"connected\":%s,\"ssid\":\"%s\","
-             "\"ip\":\"%s\",\"gw\":\"%s\",\"rssi\":%d,\"secure\":%s,"
-             "\"passlen\":%u}}",
+             "\"sta\":{\"enabled\":%s,\"connected\":%s,\"static\":%s,"
+             "\"ssid\":\"%s\",\"ip\":\"%s\",\"gw\":\"%s\",\"mask\":\"%s\","
+             "\"dns\":\"%s\",\"rssi\":%d,\"channel\":%u,"
+             "\"bssid\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+             "\"secure\":%s,\"passlen\":%u,"
+             "\"cfg_ip\":\"%s\",\"cfg_mask\":\"%s\",\"cfg_gw\":\"%s\","
+             "\"cfg_dns\":\"%s\"}}",
              cfg.mode,
              cfg.ssid, cfg.channel, cfg.max_conn,
              cfg.hidden ? "true" : "false", cfg.ip,
              (ap_pass_len >= 8) ? "true" : "false", (unsigned)ap_pass_len,
              st.enabled ? "true" : "false",
-             st.connected ? "true" : "false", st.ssid,
-             st.ip, st.gw, (int)st.rssi,
-             (sta_pass_len >= 8) ? "true" : "false", (unsigned)sta_pass_len);
+             st.connected ? "true" : "false",
+             st.static_ip ? "true" : "false",
+             st.ssid, st.ip, st.gw, st.mask, st.dns,
+             (int)st.rssi, st.channel,
+             st.bssid[0], st.bssid[1], st.bssid[2],
+             st.bssid[3], st.bssid[4], st.bssid[5],
+             (sta_pass_len >= 8) ? "true" : "false", (unsigned)sta_pass_len,
+             cfg.sta_ip, cfg.sta_mask, cfg.sta_gw, cfg.sta_dns);
     return ESP_OK;
 }
 
@@ -722,11 +756,33 @@ static esp_err_t cmd_wifi_set(const char *json, char *out, size_t out_len)
         snprintf(cfg.sta_password, sizeof(cfg.sta_password), "%s", sta_pass);
     }
 
+    /* --- STA 静态 IP --- */
+    if (app_cmd_get_int(json, "sta_static", &v)) {
+        cfg.sta_static_ip = (v != 0);
+    }
+    char sip[APP_WIFI_IP_MAX];
+    if (app_cmd_get_str(json, "sta_ip", sip, sizeof(sip))) {
+        snprintf(cfg.sta_ip, sizeof(cfg.sta_ip), "%s", sip);
+    }
+    char smask[APP_WIFI_IP_MAX];
+    if (app_cmd_get_str(json, "sta_mask", smask, sizeof(smask))) {
+        snprintf(cfg.sta_mask, sizeof(cfg.sta_mask), "%s", smask);
+    }
+    char sgw[APP_WIFI_IP_MAX];
+    if (app_cmd_get_str(json, "sta_gw", sgw, sizeof(sgw))) {
+        snprintf(cfg.sta_gw, sizeof(cfg.sta_gw), "%s", sgw);
+    }
+    char sdns[APP_WIFI_IP_MAX];
+    if (app_cmd_get_str(json, "sta_dns", sdns, sizeof(sdns))) {
+        snprintf(cfg.sta_dns, sizeof(cfg.sta_dns), "%s", sdns);
+    }
+
     err = app_wifi_set_cfg(&cfg);
     if (err == ESP_ERR_INVALID_ARG) {
         return reply_error(out, out_len,
                            "参数非法 (SSID 1-32 / 密码 8-63 或空 / "
                            "信道 1-13 / 连接数 1-10 / IP 需以 .1 结尾 / "
+                           "静态 IP 需与网关同网段且不能相同 / "
                            "模式含 STA 时需填路由器 SSID)");
     }
     if (err != ESP_OK) {
@@ -736,9 +792,13 @@ static esp_err_t cmd_wifi_set(const char *json, char *out, size_t out_len)
     snprintf(out, out_len,
              "{\"ok\":true,\"mode\":%u,\"ssid\":\"%s\",\"channel\":%u,"
              "\"maxconn\":%u,\"hidden\":%s,\"ip\":\"%s\","
-             "\"sta_ssid\":\"%s\"}",
+             "\"sta_ssid\":\"%s\",\"sta_static\":%s,"
+             "\"sta_ip\":\"%s\",\"sta_mask\":\"%s\",\"sta_gw\":\"%s\","
+             "\"sta_dns\":\"%s\"}",
              cfg.mode, cfg.ssid, cfg.channel, cfg.max_conn,
-             cfg.hidden ? "true" : "false", cfg.ip, cfg.sta_ssid);
+             cfg.hidden ? "true" : "false", cfg.ip, cfg.sta_ssid,
+             cfg.sta_static_ip ? "true" : "false",
+             cfg.sta_ip, cfg.sta_mask, cfg.sta_gw, cfg.sta_dns);
     return ESP_OK;
 }
 
@@ -784,6 +844,157 @@ static esp_err_t cmd_wifi_reconnect(char *out, size_t out_len)
         return reply_error(out, out_len, esp_err_to_name(err));
     }
     snprintf(out, out_len, "{\"ok\":true,\"reconnecting\":true}");
+    return ESP_OK;
+}
+
+/* ============================================================================
+ * 命令: 服务开关 (wifi.enable / ble.enable)
+ *
+ * 关闭服务是有风险的操作 —— 尤其关闭 WiFi 会**立即断开当前连接**，
+ * 若设备没有其他接入方式 (AP 关闭且 STA 未连上) 将彻底失联。
+ * 因此:
+ *   - 需要显式传 confirm:1，否则拒绝执行
+ *   - 关闭 WiFi 前检查是否有退路 (AP 关闭时 STA 必须已连接)
+ * ========================================================================== */
+
+/** 检查参数中是否带 confirm:1 */
+static bool has_confirm(const char *json)
+{
+    long v = 0;
+    return app_cmd_get_int(json, "confirm", &v) && v == 1;
+}
+
+static esp_err_t cmd_ble_enable(const char *json, char *out, size_t out_len)
+{
+    long en = 0;
+    if (!app_cmd_get_int(json, "enabled", &en)) {
+        return reply_error(out, out_len, "缺少 enabled 字段");
+    }
+    if (!has_confirm(json)) {
+        return reply_error(out, out_len,
+                           "关闭/启用蓝牙需二次确认 (confirm:1)");
+    }
+
+    bool want = (en != 0);
+
+    if (want) {
+        esp_err_t err = app_ble_start();
+        if (err == ESP_ERR_INVALID_STATE) {
+            snprintf(out, out_len, "{\"ok\":true,\"enabled\":true,"
+                                   "\"note\":\"已在运行\"}");
+            return ESP_OK;
+        }
+        if (err == ESP_ERR_NOT_SUPPORTED) {
+            return reply_error(out, out_len, "本芯片不支持蓝牙");
+        }
+        if (err != ESP_OK) {
+            return reply_error(out, out_len, esp_err_to_name(err));
+        }
+    } else {
+        esp_err_t err = app_ble_stop();
+        if (err != ESP_OK) {
+            return reply_error(out, out_len, esp_err_to_name(err));
+        }
+    }
+
+    snprintf(out, out_len, "{\"ok\":true,\"enabled\":%s}",
+             want ? "true" : "false");
+    return ESP_OK;
+}
+
+static esp_err_t cmd_wifi_enable(const char *json, char *out, size_t out_len)
+{
+    long en = 0;
+    if (!app_cmd_get_int(json, "enabled", &en)) {
+        return reply_error(out, out_len, "缺少 enabled 字段");
+    }
+    if (!has_confirm(json)) {
+        return reply_error(out, out_len,
+                           "关闭/启用 WiFi 需二次确认 (confirm:1)");
+    }
+
+    bool want = (en != 0);
+
+    if (want) {
+        esp_err_t err = app_wifi_start();
+        if (err == ESP_ERR_NOT_SUPPORTED) {
+            return reply_error(out, out_len, "本芯片不支持 WiFi");
+        }
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            return reply_error(out, out_len, esp_err_to_name(err));
+        }
+    } else {
+        /*
+         * 关闭前检查退路。
+         *
+         * 若当前模式含 STA 且已连上路由器，关闭 WiFi 后仍可通过
+         * 路由器访问 —— 但那是同一个 WiFi 服务，关掉就都没了。
+         * 因此关闭 WiFi 意味着**必然失联**，这里只做告警提示。
+         */
+        esp_err_t err = app_wifi_stop();
+        if (err != ESP_OK) {
+            return reply_error(out, out_len, esp_err_to_name(err));
+        }
+        snprintf(out, out_len,
+                 "{\"ok\":true,\"enabled\":false,"
+                 "\"warning\":\"WiFi 已关闭，设备将无法通过网络访问，"
+                 "只能通过蓝牙或串口恢复\"}");
+        return ESP_OK;
+    }
+
+    snprintf(out, out_len, "{\"ok\":true,\"enabled\":%s}",
+             want ? "true" : "false");
+    return ESP_OK;
+}
+
+/* ============================================================================
+ * 命令: BLE 配对码 (ble.pin)
+ * ========================================================================== */
+
+static esp_err_t cmd_ble_pin(const char *json, char *out, size_t out_len)
+{
+    /* --- 查询 --- */
+    long get = 0;
+    if (app_cmd_get_int(json, "get", &get) && get == 1) {
+        snprintf(out, out_len,
+                 "{\"ok\":true,\"enabled\":%s,\"pin\":\"%s\"}",
+                 app_ble_pairing_enabled() ? "true" : "false",
+                 app_ble_get_pin());
+        return ESP_OK;
+    }
+
+    /* --- 设置 --- */
+    char pin[16];
+    const char *p = NULL;
+    if (app_cmd_get_str(json, "pin", pin, sizeof(pin))) {
+        p = pin;
+    }
+    /*
+     * 允许显式清空: {"pin":""} 或 {"enabled":0}
+     * 前者由 get_str 返回空串，后者用 enabled 字段表达。
+     */
+    long en = 0;
+    if (app_cmd_get_int(json, "enabled", &en) && en == 0) {
+        p = "";
+    }
+
+    if (p == NULL) {
+        return reply_error(out, out_len,
+                           "缺少 pin 字段 (6 位数字，或空串以禁用配对)");
+    }
+
+    esp_err_t err = app_ble_set_pin(p);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return reply_error(out, out_len, "配对码必须是 6 位数字");
+    }
+    if (err != ESP_OK) {
+        return reply_error(out, out_len, esp_err_to_name(err));
+    }
+
+    snprintf(out, out_len,
+             "{\"ok\":true,\"enabled\":%s,\"pin\":\"%s\"}",
+             app_ble_pairing_enabled() ? "true" : "false",
+             app_ble_get_pin());
     return ESP_OK;
 }
 
@@ -1288,6 +1499,17 @@ esp_err_t app_cmd_execute(const char *json, char *out_buf, size_t out_len)
     }
     if (strcmp(cmd, "wifi.reconnect") == 0) {
         return cmd_wifi_reconnect(out_buf, out_len);
+    }
+    if (strcmp(cmd, "wifi.enable") == 0) {
+        return cmd_wifi_enable(json, out_buf, out_len);
+    }
+
+    /* --- 蓝牙 --- */
+    if (strcmp(cmd, "ble.enable") == 0) {
+        return cmd_ble_enable(json, out_buf, out_len);
+    }
+    if (strcmp(cmd, "ble.pin") == 0) {
+        return cmd_ble_pin(json, out_buf, out_len);
     }
     if (strcmp(cmd, "wifi.reset") == 0) {
         /*

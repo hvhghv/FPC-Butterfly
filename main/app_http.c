@@ -320,6 +320,24 @@ static esp_err_t handler_wifi_reset(httpd_req_t *req)
     return run_cmd(req, "wifi.reset", NULL);
 }
 
+/** POST /api/wifi/enable — 启用/禁用 WiFi (需 confirm:1) */
+static esp_err_t handler_wifi_enable(httpd_req_t *req)
+{
+    return run_cmd_with_body(req, "wifi.enable");
+}
+
+/** POST /api/ble/enable — 启用/禁用蓝牙 (需 confirm:1) */
+static esp_err_t handler_ble_enable(httpd_req_t *req)
+{
+    return run_cmd_with_body(req, "ble.enable");
+}
+
+/** POST /api/ble/pin — 查询/设置蓝牙配对码 */
+static esp_err_t handler_ble_pin(httpd_req_t *req)
+{
+    return run_cmd_with_body(req, "ble.pin");
+}
+
 /** GET /api/config — 导出配置 (不含密码) */
 static esp_err_t handler_config_export(httpd_req_t *req)
 {
@@ -371,6 +389,9 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/wifi/scan", .method = HTTP_POST, .handler = handler_wifi_scan },
     { .uri = "/api/wifi/reconnect", .method = HTTP_POST, .handler = handler_wifi_reconnect },
     { .uri = "/api/wifi/reset",.method = HTTP_POST, .handler = handler_wifi_reset },
+    { .uri = "/api/wifi/enable", .method = HTTP_POST, .handler = handler_wifi_enable },
+    { .uri = "/api/ble/enable", .method = HTTP_POST, .handler = handler_ble_enable },
+    { .uri = "/api/ble/pin",   .method = HTTP_POST, .handler = handler_ble_pin },
     { .uri = "/api/config",    .method = HTTP_GET,  .handler = handler_config_export },
     { .uri = "/api/config",    .method = HTTP_POST, .handler = handler_config_import },
     { .uri = "/api/config/export", .method = HTTP_POST, .handler = handler_config_export_post },

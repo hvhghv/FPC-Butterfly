@@ -45,6 +45,38 @@ extern "C" {
 /** 设备在蓝牙广播中显示的名称前缀 */
 #define APP_BLE_DEVICE_NAME     "Butterfly-LED"
 
+/** 配对码长度 (6 位数字，符合 BLE 规范) */
+#define APP_BLE_PIN_LEN         6
+
+/**
+ * @brief 设置 BLE 配对码
+ *
+ * 启用配对后，客户端连接时需要输入该 6 位数字码。
+ * 设置后立即生效 (下次配对时使用)，并写入 NVS 持久保存。
+ *
+ * @param pin 6 位数字字符串，如 "123456"；传 NULL 或空串表示禁用配对
+ * @return ESP_OK 成功
+ *         ESP_ERR_INVALID_ARG 格式非法 (必须是 6 位数字)
+ *         ESP_ERR_INVALID_STATE BLE 未启动
+ */
+esp_err_t app_ble_set_pin(const char *pin);
+
+/**
+ * @brief 查询是否启用了配对
+ *
+ * @return true 已启用 (需要配对码)
+ */
+bool app_ble_pairing_enabled(void);
+
+/**
+ * @brief 查询当前配对码
+ *
+ * 仅在 app_ble_pairing_enabled() 为 true 时有意义。
+ *
+ * @return 6 位数字字符串；未启用时返回空串
+ */
+const char *app_ble_get_pin(void);
+
 /**
  * @brief 启动 BLE 服务
  *
