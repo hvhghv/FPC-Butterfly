@@ -8,13 +8,13 @@
 :root{--bg:#0f1115;--card:#161a22;--line:#232936;--fg:#e6e6e6;--dim:#8a93a5;--acc:#2a6df4;--ok:#2ecc71;--warn:#e67e22}
 *{box-sizing:border-box}
 body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;margin:0;background:var(--bg);color:var(--fg);line-height:1.6}
-.wrap{max-width:960px;margin:0 auto;padding:18px}
+.wrap{max-width:1400px;margin:0 auto;padding:18px}
 h1{font-size:21px;border-bottom:2px solid var(--acc);padding-bottom:8px;margin:0 0 4px}
 .sub{color:var(--dim);font-size:13px;margin-bottom:14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-top:12px}
 .card h2{font-size:15px;color:#8ab4ff;margin:0 0 10px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
-.led{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:#12161d}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px}
+.led{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:#12161d;min-width:0}
 .led.off{opacity:.55}
 .led .hd{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
 .led .nm{font-weight:600;font-size:14px}
@@ -53,15 +53,24 @@ gap:8px;margin:6px 0;font-size:13px}
 .sw input{width:auto;flex:none;cursor:pointer}
 .seq{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line)}
 .seq .sh{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--dim);margin-bottom:6px}
-.step{display:flex;align-items:center;gap:5px;margin:4px 0;font-size:12px}
-.step .no{width:14px;color:var(--dim);text-align:right;flex:none}
-.step select{flex:1;min-width:0;padding:3px 5px;font-size:12px}
-.step input{width:58px;flex:none;padding:3px 5px;font-size:12px}
-.step .x{background:#39404f;color:var(--fg);border:0;border-radius:4px;width:20px;height:20px;
-line-height:1;padding:0;font-size:13px;cursor:pointer;flex:none;margin:0}
+/*
+ * 步骤行: 用 grid 固定各列宽度, 避免 flex 在窄容器里把输入框压扁。
+ *   序号 | 效果(自适应) | 时长 | 周期 | 删除
+ * 时长/周期列固定 64px, 保证 "1000" 这类 4 位数完整显示。
+ */
+.step{display:grid;grid-template-columns:16px minmax(0,1fr) 64px 64px 22px;
+ align-items:center;gap:5px;margin:4px 0;font-size:12px}
+.step .no{color:var(--dim);text-align:right}
+.step select,.step input{width:100%;min-width:0;padding:3px 5px;font-size:12px}
+/* 步骤列表表头: 与 .step 同列宽, 标注各列含义 */
+.stephead{display:grid;grid-template-columns:16px minmax(0,1fr) 64px 64px 22px;
+ gap:5px;font-size:10px;color:var(--dim);margin:2px 0 3px}
+.stephead span:nth-child(3),.stephead span:nth-child(4){text-align:center}
+.step .x{background:#39404f;color:var(--fg);border:0;border-radius:4px;width:22px;height:22px;
+line-height:1;padding:0;font-size:13px;cursor:pointer;margin:0}
 .step .x:hover{background:#c0392b}
 .sbtns{display:flex;gap:6px;margin-top:7px}
-.sbtns button{flex:1;padding:5px 8px;font-size:12px;margin:0}
+.sbtns button{flex:1;padding:5px 8px;font-size:12px;margin:0;white-space:nowrap}
 .seq .hint{font-size:11px;color:var(--dim);margin-top:5px}
 input[type=color]{width:44px;height:28px;border:1px solid var(--line);border-radius:4px;background:#0f1115;padding:2px;cursor:pointer}
 button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;margin:3px 5px 3px 0}
@@ -399,33 +408,38 @@ return `<div class="step" data-k="${k}">
 <span class="no">${k+1}</span>
 <select class="se">${EFFECTS.map(e=>
 `<option value="${e[0]}"${e[0]===eff?' selected':''}>${e[1]}</option>`).join('')}</select>
-<input class="sd" type="number" min="10" max="600000" step="100" value="${dur}" title="时长 ms">
-<input class="sp" type="number" min="0" max="60000" step="100" value="${per}" title="周期 ms (0=与时长相同)">
+<input class="sd" type="number" min="10" max="600000" step="100" value="${dur}" title="时长 ms" placeholder="时长">
+<input class="sp" type="number" min="0" max="60000" step="100" value="${per}" title="周期 ms (0=与时长相同)" placeholder="周期">
 <button class="x" onclick="delStep(${id},${k})" title="删除">×</button>
 </div>`;}
 
 function addStep(id,eff,dur,per){
 const box=document.getElementById('sq'+id);
-const k=box.children.length;
+const k=box.querySelectorAll('.step').length;
 if(k>=MAX_STEPS){log('最多 '+MAX_STEPS+' 个步骤');return;}
+/* 首个步骤时插入表头, 说明各列含义 */
+if(k===0){box.insertAdjacentHTML('beforeend',
+'<div class="stephead"><span></span><span>效果</span><span>时长ms</span><span>周期ms</span><span></span></div>');}
 box.insertAdjacentHTML('beforeend',
 stepRow(id,k,eff||'none',dur||1000,per||0));}
 
 function delStep(id,k){
 const box=document.getElementById('sq'+id);
-if(box.children[k])box.children[k].remove();
+const row=box.querySelector('.step[data-k="'+k+'"]');
+if(row)row.remove();
+if(!box.querySelector('.step')){const h=box.querySelector('.stephead');if(h)h.remove();}
 reindex(id);}
 
 function reindex(id){
 const box=document.getElementById('sq'+id);
-[...box.children].forEach((el,i)=>{
+[...box.querySelectorAll('.step')].forEach((el,i)=>{
 el.dataset.k=i;
 el.querySelector('.no').textContent=i+1;
 el.querySelector('.x').setAttribute('onclick',`delStep(${id},${i})`);});}
 
 function readSteps(id){
 const box=document.getElementById('sq'+id);
-return [...box.children].map(el=>({
+return [...box.querySelectorAll('.step')].map(el=>({
 effect:el.querySelector('.se').value,
 duration:+el.querySelector('.sd').value||1000,
 period:+el.querySelector('.sp').value||0}));}
