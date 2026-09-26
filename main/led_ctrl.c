@@ -1712,9 +1712,11 @@ esp_err_t led_ctrl_load(void)
     }
 
     if (blob->version != LED_NVS_VERSION) {
+        /* 先取值再释放，避免 use-after-free */
+        unsigned ver = (unsigned)blob->version;
         free(blob);
         ESP_LOGW(TAG, "灯珠配置版本不符 (存 %u 需 %u)，使用默认值",
-                 (unsigned)blob->version, (unsigned)LED_NVS_VERSION);
+                 ver, (unsigned)LED_NVS_VERSION);
         return ESP_ERR_NOT_FOUND;
     }
 
