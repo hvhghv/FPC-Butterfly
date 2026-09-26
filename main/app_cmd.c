@@ -719,6 +719,104 @@ static esp_err_t cmd_battery_get(char *out, size_t out_len)
 }
 
 /* ============================================================================
+ * 命令: battery.diag — I2C 总线诊断
+ *
+ * 用于排查"IP5108 没反应"。会扫描总线、检查空闲电平、对比不同速率，
+ * 并给出结论。结果同时输出到串口日志，便于对照示波器/万用表排查。
+ * ========================================================================== */
+
+static esp_err_t cmd_battery_diag(char *out, size_t out_len)
+{
+    battery_diag_t d;
+    esp_err_t err = battery_ip5108_diag(&d);
+    if (err != ESP_OK) {
+        return reply_error(out, out_len, esp_err_to_name(err));
+    }
+
+    /* 结论: 供前端/串口直接判读 */
+    const char *verdict;
+    if (d.probe_400k) {
+        verdict = "ok";
+    } else if (d.probe_100k) {
+        verdict = "ok_100k";
+    } else if (d.probe_50k) {
+        verdict = "pullup_weak";
+    } else if (d.scan_count > 0) {
+        verdict = "addr_mismatch";
+    } else if (!d.scl_high || !d.sda_high) {
+        verdict = "no_pullup";
+    } else {
+        verdict = "not_in_i2c_mode";
+    }
+
+    snprintf(out, out_len,
+             "{\"ok\":true,"
+             "\"scl_high\":%s,\"sda_high\":%s,"
+             "\"scan_count\":%u,\"found_addr\":%u,"
+             "\"probe_50k\":%s,\"probe_100k\":%s,\"probe_400k\":%s,"
+             "\"int_level\":%d,\"verdict\":\"%s\"}",
+             d.scl_high ? "true" : "false",
+             d.sda_high ? "true" : "false",
+             (unsigned)d.scan_count, (unsigned)d.found_addr,
+             d.probe_50k ? "true" : "false",
+             d.probe_100k ? "true" : "false",
+             d.probe_400k ? "true" : "false",
+             d.int_level, verdict);
+
+    return ESP_OK;
+}
+
+/* ============================================================================
+ * 命令: battery.refresh — 重新探测并读取电池
+ *
+ * 首次初始化失败后（例如芯片当时未进入 I2C 模式，或电池刚插入），
+ * 前端可点「刷新」触发一次完整重新探测，无需重启设备。
+ *
+ * 请求: {"cmd":"battery.refresh"}
+ * 响应: 与 battery.get 相同，额外带 "reinit":true/false
+ * ========================================================================== */
+
+static esp_err_t cmd_battery_refresh(char *out, size_t out_len)
+{
+    esp_err_t err = battery_ip5108_reinit();
+    bool ok = (err == ESP_OK);
+
+    if (!ok) {
+        /*
+         * 重新探测失败: 仍返回 ok=true，但 available=false，
+         * 并用 reinit=false 告知前端本次刷新未成功。
+         * 这样前端可区分「命令失败」与「硬件未就绪」。
+         */
+        snprintf(out, out_len,
+                 "{\"ok\":true,\"available\":false,"
+                 "\"reinit\":false,\"error\":\"%s\"}",
+                 esp_err_to_name(err));
+        return ESP_OK;
+    }
+
+    /* 重新探测成功: 复用 battery.get 的输出，再插入 reinit 字段 */
+    char tmp[APP_CMD_RESP_MAX];
+    esp_err_t e = cmd_battery_get(tmp, sizeof(tmp));
+    if (e != ESP_OK) {
+        return e;
+    }
+
+    /* tmp 形如 {"ok":true,"available":true,...} ，插入 reinit 字段 */
+    size_t len = strlen(tmp);
+    if (len < 2 || tmp[len - 1] != '}') {
+        return reply_error(out, out_len, "内部响应格式错误");
+    }
+
+    int n = snprintf(out, out_len, "%.*s,\"reinit\":true}",
+                     (int)(len - 1), tmp);
+    if (n < 0 || (size_t)n >= out_len) {
+        return reply_error(out, out_len, "响应过长");
+    }
+
+    return ESP_OK;
+}
+
+/* ============================================================================
  * 命令: wifi.* — 网络配置
  * ========================================================================== */
 
@@ -1634,6 +1732,21 @@ esp_err_t app_cmd_execute_src(const char *json, char *out_buf, size_t out_len,
     /* --- 电池 (IP5108 电量计) --- */
     if (strcmp(cmd, "battery.get") == 0) {
         return cmd_battery_get(out_buf, out_len);
+    }
+    if (strcmp(cmd, "battery.diag") == 0) {
+        return cmd_battery_diag(out_buf, out_len);
+    }
+    if (strcmp(cmd, "battery.refresh") == 0) {
+        return cmd_battery_refresh(out_buf, out_len);
+    }
+    if (strcmp(cmd, "battery.reinit") == 0) {
+        esp_err_t e = battery_ip5108_reinit();
+        if (e != ESP_OK) {
+            return reply_error(out_buf, out_len, esp_err_to_name(e));
+        }
+        snprintf(out_buf, out_len, "{\"ok\":true,\"available\":%s}",
+                 battery_ip5108_available() ? "true" : "false");
+        return ESP_OK;
     }
 
     /* --- WiFi --- */

@@ -297,6 +297,20 @@ static esp_err_t handler_battery(httpd_req_t *req)
     return run_cmd(req, "battery.get", NULL);
 }
 
+/** POST /api/battery/diag — I2C 总线诊断 */
+static esp_err_t handler_battery_diag(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "收到 I2C 诊断请求");
+    return run_cmd(req, "battery.diag", NULL);
+}
+
+/** POST /api/battery/refresh — 重新探测并读取电池 */
+static esp_err_t handler_battery_refresh(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "收到电池刷新请求");
+    return run_cmd(req, "battery.refresh", NULL);
+}
+
 /** GET /api/wifi — 读取 WiFi 配置与 STA 状态 */
 static esp_err_t handler_wifi_get(httpd_req_t *req)
 {
@@ -392,6 +406,8 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/",              .method = HTTP_GET,  .handler = handler_index },
     { .uri = "/api/status",    .method = HTTP_GET,  .handler = handler_status },
     { .uri = "/api/battery",   .method = HTTP_GET,  .handler = handler_battery },
+    { .uri = "/api/battery/diag",    .method = HTTP_POST, .handler = handler_battery_diag },
+    { .uri = "/api/battery/refresh", .method = HTTP_POST, .handler = handler_battery_refresh },
     { .uri = "/api/led",       .method = HTTP_POST, .handler = handler_led },
     { .uri = "/api/led/effect",.method = HTTP_POST, .handler = handler_led_effect },
     { .uri = "/api/led/brightness", .method = HTTP_POST, .handler = handler_led_brightness },

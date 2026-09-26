@@ -365,6 +365,98 @@ static bool wait_i2c_ready(void)
 #endif
 }
 
+/**
+ * @brief 创建 I2C 主机总线并挂载 IP5108
+ *
+ * @param freq_hz 总线速率
+ * @return ESP_OK 成功（总线与设备句柄已就绪）
+ */
+static esp_err_t bus_create(uint32_t freq_hz)
+{
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port          = I2C_NUM_0,
+        .sda_io_num        = BATTERY_IP5108_SDA_GPIO,
+        .scl_io_num        = BATTERY_IP5108_SCL_GPIO,
+        .clk_source        = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        /*
+         * 内部上拉仅作兜底。
+         *
+         * ⚠️ IP5108 数据手册要求 SCL/SDA 外接上拉到 VREG。
+         *    ESP32 内部上拉约 45kΩ，400kHz 下上升沿过慢会导致通信失败，
+         *    硬件上必须有外部上拉 (典型 2.2k - 10k)。
+         */
+        .flags.enable_internal_pullup = BATTERY_IP5108_USE_INTERNAL_PULLUP,
+    };
+
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "创建 I2C 总线失败: %s", esp_err_to_name(err));
+        s_bus = NULL;
+        return err;
+    }
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = BATTERY_IP5108_I2C_ADDR,
+        .scl_speed_hz    = freq_hz,
+    };
+
+    err = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "挂载 IP5108 失败: %s", esp_err_to_name(err));
+        i2c_del_master_bus(s_bus);
+        s_bus = NULL;
+        s_dev = NULL;
+        return err;
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief 释放 I2C 总线
+ */
+static void bus_destroy(void)
+{
+    if (s_dev != NULL) {
+        i2c_master_bus_rm_device(s_dev);
+        s_dev = NULL;
+    }
+    if (s_bus != NULL) {
+        i2c_del_master_bus(s_bus);
+        s_bus = NULL;
+    }
+}
+
+/**
+ * @brief 读取 SCL/SDA 空闲电平
+ *
+ * 把两个引脚临时配为输入（带上拉），读取电平。
+ * 正常的总线空闲时两者都应为高。
+ *
+ * @param[out] scl_high SCL 是否为高
+ * @param[out] sda_high SDA 是否为高
+ */
+static void read_idle_levels(bool *scl_high, bool *sda_high)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = (1ULL << BATTERY_IP5108_SCL_GPIO) |
+                        (1ULL << BATTERY_IP5108_SDA_GPIO),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
+
+    /* 等电平稳定 */
+    vTaskDelay(pdMS_TO_TICKS(5));
+
+    *scl_high = (gpio_get_level((gpio_num_t)BATTERY_IP5108_SCL_GPIO) != 0);
+    *sda_high = (gpio_get_level((gpio_num_t)BATTERY_IP5108_SDA_GPIO) != 0);
+}
+
 /* ============================================================================
  * 初始化
  * ========================================================================== */
@@ -381,55 +473,58 @@ esp_err_t battery_ip5108_init(void)
     /* --- 2. 等待芯片就绪 --- */
     wait_i2c_ready();
 
-    /* --- 3. 创建 I2C 主机总线 --- */
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port          = I2C_NUM_0,
-        .sda_io_num        = BATTERY_IP5108_SDA_GPIO,
-        .scl_io_num        = BATTERY_IP5108_SCL_GPIO,
-        .clk_source        = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        /*
-         * 启用内部上拉。
-         *
-         * IP5108 的 L1/L2 在 I2C 模式下由芯片自己上拉到 VREG，
-         * 但探测阶段（芯片可能尚未进入 I2C 模式）总线可能是浮空的，
-         * 开内部上拉可避免读到随机值。
-         */
-        .flags.enable_internal_pullup = true,
-    };
+    /* --- 3. 先看总线空闲电平 (快速判断上拉是否正常) --- */
+    bool scl_high = false, sda_high = false;
+    read_idle_levels(&scl_high, &sda_high);
+    if (!scl_high || !sda_high) {
+        ESP_LOGW(TAG, "总线空闲电平异常: SCL=%s SDA=%s (应为高)",
+                 scl_high ? "高" : "低", sda_high ? "高" : "低");
+        ESP_LOGW(TAG, "→ 检查 SCL/SDA 是否有外部上拉电阻 (数据手册要求"
+                      "上拉到 VREG, 典型 2.2k-10k)");
+    }
 
-    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
+    /* --- 4. 以默认(低速 100kHz)建立总线 --- */
+    esp_err_t err = bus_create(BATTERY_IP5108_I2C_FREQ);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "创建 I2C 总线失败: %s", esp_err_to_name(err));
-        s_bus = NULL;
         return err;
     }
 
-    /* --- 4. 挂载 IP5108 从机 --- */
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = BATTERY_IP5108_I2C_ADDR,
-        .scl_speed_hz    = BATTERY_IP5108_I2C_FREQ,
-    };
+    err = i2c_master_probe(s_bus, BATTERY_IP5108_I2C_ADDR, 300);
 
-    err = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev);
+    /* --- 5. 低速失败时进一步降速重试 (50kHz) --- */
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "挂载 IP5108 失败: %s", esp_err_to_name(err));
-        i2c_del_master_bus(s_bus);
-        s_bus = NULL;
-        s_dev = NULL;
-        return err;
+        ESP_LOGW(TAG, "%d Hz 探测失败 (%s)，尝试 %d Hz...",
+                 BATTERY_IP5108_I2C_FREQ, esp_err_to_name(err),
+                 BATTERY_IP5108_I2C_FREQ_FALLBACK);
+
+        bus_destroy();
+
+        err = bus_create(BATTERY_IP5108_I2C_FREQ_FALLBACK);
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        err = i2c_master_probe(s_bus, BATTERY_IP5108_I2C_ADDR, 800);
+
+        if (err == ESP_OK) {
+            ESP_LOGW(TAG, "50kHz 探测成功 —— 说明**上拉不足或总线电容过大**!");
+            ESP_LOGW(TAG, "→ 请给 SCL/SDA 加外部上拉电阻 (2.2k-10k 到 VREG)");
+        }
     }
 
-    /* --- 5. 探测芯片 --- */
-    err = i2c_master_probe(s_bus, BATTERY_IP5108_I2C_ADDR, 200);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "未探测到 IP5108 (地址 0x%02X): %s",
                  BATTERY_IP5108_I2C_ADDR, esp_err_to_name(err));
-        ESP_LOGW(TAG, "电池信息将不可用 (可能未接电池或芯片处于 LED 模式)");
+        ESP_LOGW(TAG, "可能原因:");
+        ESP_LOGW(TAG, "  1. SCL/SDA 缺少外部上拉 (最常见)");
+        ESP_LOGW(TAG, "  2. 芯片未进入 I2C 模式 —— IP5108 只在 sleep->wake "
+                      "瞬间检测上拉, 失败则退回 LED 指示模式且本次供电周期"
+                      "内无法恢复");
+        ESP_LOGW(TAG, "  3. 接线错误或未接电池");
+        ESP_LOGW(TAG, "→ 可在串口执行诊断: 见 battery_ip5108_diag()");
         /*
-         * 不释放总线 —— 保留句柄，允许后续重试读取。
-         * s_ready 保持 false，battery_ip5108_available() 会返回 false。
+         * 不释放总线 —— 保留句柄允许后续重试。
+         * s_ready 保持 false，battery_ip5108_available() 返回 false。
          */
         return ESP_ERR_NOT_FOUND;
     }
@@ -446,6 +541,175 @@ esp_err_t battery_ip5108_init(void)
                  st.voltage, st.current * 1000.0f, st.percent,
                  battery_charge_status_desc(st.charge_status));
     }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief 重新初始化电量计 (供前端「刷新」按钮使用)
+ *
+ * 用途: 首次初始化失败后 (例如芯片当时还没进入 I2C 模式、或电池刚插入)，
+ *       用户可点「刷新」触发一次完整的重新探测，无需重启设备。
+ *
+ * 流程: 销毁旧总线 -> 重新释放引脚 -> 重新探测 (低速优先)
+ *
+ * 与 battery_ip5108_init() 的区别: 允许在已初始化状态下重复调用，
+ * 会先清理旧资源。
+ *
+ * @return ESP_OK 重新探测成功
+ *         ESP_ERR_NOT_FOUND 仍未探测到芯片 (s_ready 保持 false)
+ *         其他 I2C 错误
+ */
+esp_err_t battery_ip5108_reinit(void)
+{
+    ESP_LOGI(TAG, "重新初始化电量计...");
+
+    /* --- 清理旧资源 --- */
+    s_ready = false;
+    bus_destroy();
+
+    /* --- 重新走一遍初始化流程 --- */
+    esp_err_t err = battery_ip5108_init();
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "电量计重新初始化成功");
+    } else {
+        ESP_LOGW(TAG, "电量计重新初始化失败: %s", esp_err_to_name(err));
+    }
+
+    return err;
+}
+
+/* ============================================================================
+ * 总线诊断
+ * ========================================================================== */
+
+esp_err_t battery_ip5108_diag(battery_diag_t *diag)
+{
+    if (diag == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(diag, 0, sizeof(*diag));
+    diag->int_level = -1;
+
+    ESP_LOGI(TAG, "========== I2C 总线诊断 ==========");
+
+    /* --- 1. 释放引脚并检查空闲电平 --- */
+    release_usb_pins();
+
+    bool scl_high = false, sda_high = false;
+    read_idle_levels(&scl_high, &sda_high);
+    diag->scl_high = scl_high;
+    diag->sda_high = sda_high;
+
+    ESP_LOGI(TAG, "[1] 空闲电平: SCL=IO%d %s, SDA=IO%d %s",
+             BATTERY_IP5108_SCL_GPIO, scl_high ? "高 ✓" : "低 ✗",
+             BATTERY_IP5108_SDA_GPIO, sda_high ? "高 ✓" : "低 ✗");
+
+    if (!scl_high || !sda_high) {
+        ESP_LOGW(TAG, "    ✗ 引脚未被拉高 —— 上拉电阻缺失或总线被拉死");
+        ESP_LOGW(TAG, "      数据手册要求 SCL/SDA 外接上拉到 VREG");
+    } else {
+        ESP_LOGI(TAG, "    ✓ 上拉正常 (注意: 仅能证明有上拉, 阻值可能偏大)");
+    }
+
+    /* --- 2. INT 引脚电平 --- */
+#if BATTERY_IP5108_INT_GPIO >= 0
+    gpio_config_t int_cfg = {
+        .pin_bit_mask = 1ULL << BATTERY_IP5108_INT_GPIO,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&int_cfg);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    diag->int_level = gpio_get_level((gpio_num_t)BATTERY_IP5108_INT_GPIO);
+
+    ESP_LOGI(TAG, "[2] INT (IO%d) 电平: %d %s",
+             BATTERY_IP5108_INT_GPIO, diag->int_level,
+             diag->int_level ? "(高 → 已进入 I2C 模式 ✓)"
+                             : "(低 → 未进入 I2C 模式 ✗)");
+#else
+    ESP_LOGI(TAG, "[2] INT 引脚未配置 —— 无法确认芯片是否进入 I2C 模式");
+#endif
+
+    /* --- 3. 扫描总线 (用默认低速档) --- */
+    if (bus_create(BATTERY_IP5108_I2C_FREQ) != ESP_OK) {
+        ESP_LOGE(TAG, "[3] 无法建立 I2C 总线，诊断中止");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "[3] 扫描地址 0x08-0x77 (%d Hz):", BATTERY_IP5108_I2C_FREQ);
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        if (i2c_master_probe(s_bus, addr, 50) == ESP_OK) {
+            ESP_LOGI(TAG, "    0x%02X 应答 ✓", addr);
+            if (diag->scan_count == 0) {
+                diag->found_addr = addr;
+            }
+            diag->scan_count++;
+        }
+    }
+
+    if (diag->scan_count == 0) {
+        ESP_LOGW(TAG, "    ✗ 总线上没有任何设备应答");
+        ESP_LOGW(TAG, "      → 检查接线 / 上拉电阻 / 芯片供电");
+    } else if (diag->found_addr != BATTERY_IP5108_I2C_ADDR) {
+        ESP_LOGW(TAG, "    ⚠ 扫到设备但地址不是 0x%02X",
+                 BATTERY_IP5108_I2C_ADDR);
+    }
+
+    /* --- 4. 三档速率下分别探测 0x75 --- */
+    diag->probe_100k =
+        (i2c_master_probe(s_bus, BATTERY_IP5108_I2C_ADDR, 200) == ESP_OK);
+
+    bus_destroy();
+
+    if (bus_create(BATTERY_IP5108_I2C_FREQ_FALLBACK) == ESP_OK) {
+        diag->probe_50k =
+            (i2c_master_probe(s_bus, BATTERY_IP5108_I2C_ADDR, 300) == ESP_OK);
+        bus_destroy();
+    }
+
+    if (bus_create(BATTERY_IP5108_I2C_FREQ_FAST) == ESP_OK) {
+        diag->probe_400k =
+            (i2c_master_probe(s_bus, BATTERY_IP5108_I2C_ADDR, 200) == ESP_OK);
+        bus_destroy();
+    }
+
+    ESP_LOGI(TAG, "[4] 探测 0x%02X: 50kHz=%s, 100kHz=%s, 400kHz=%s",
+             BATTERY_IP5108_I2C_ADDR,
+             diag->probe_50k ? "✓" : "✗",
+             diag->probe_100k ? "✓" : "✗",
+             diag->probe_400k ? "✓" : "✗");
+
+    /* --- 5. 结论 --- */
+    ESP_LOGI(TAG, "---------- 诊断结论 ----------");
+    if (diag->probe_400k) {
+        ESP_LOGI(TAG, "✓ 400kHz 通信正常，上拉充足，芯片在 I2C 模式");
+    } else if (diag->probe_100k) {
+        ESP_LOGI(TAG, "✓ 100kHz 通信正常 (当前默认档位)");
+        ESP_LOGW(TAG, "⚠ 400kHz 失败 → 上拉偏弱或总线电容偏大");
+        ESP_LOGW(TAG, "  当前用低速档可正常工作，如需提速请改善上拉");
+    } else if (diag->probe_50k) {
+        ESP_LOGW(TAG, "⚠ 仅 50kHz 可用 → **上拉严重不足**");
+        ESP_LOGW(TAG, "  请加装外部上拉电阻 (2.2k-10k 到 VREG)");
+    } else if (diag->scan_count > 0) {
+        ESP_LOGW(TAG, "⚠ 总线有设备但 0x75 不应答");
+        ESP_LOGW(TAG, "  → 确认 IP5108 地址，或检查其供电/使能");
+    } else if (!diag->scl_high || !diag->sda_high) {
+        ESP_LOGW(TAG, "✗ 引脚未被拉高 → 上拉缺失或接线断开");
+    } else {
+        ESP_LOGW(TAG, "✗ 总线空闲电平正常但无任何应答");
+        ESP_LOGW(TAG, "  → 最可能是 **IP5108 未进入 I2C 模式**");
+        ESP_LOGW(TAG, "    IP5108 只在 sleep->wake 瞬间检测 SCL/SDA 是否");
+        ESP_LOGW(TAG, "    上拉到 VREG。检测失败会退回 LED 指示模式，且");
+        ESP_LOGW(TAG, "    本次供电周期内无法恢复。");
+        ESP_LOGW(TAG, "    对策: 断开再接入电池/充电器触发一次 wake，");
+        ESP_LOGW(TAG, "          并确保上拉电阻在上电前就已就位。");
+    }
+    ESP_LOGI(TAG, "================================");
 
     return ESP_OK;
 }

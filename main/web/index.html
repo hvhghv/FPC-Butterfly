@@ -274,6 +274,10 @@ resize:vertical;display:none"></textarea>
 
 <div class="card">
 <h2>电池信息 <span class="ps" style="font-weight:400">(IP5108 电量计)</span></h2>
+<div style="margin-bottom:10px">
+<button class="gray" onclick="refreshBattery(true)">刷新电池</button>
+<button class="gray" onclick="batteryDiag()">I2C 诊断</button>
+</div>
 <div id="battwrap">
 <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px">
 <!-- 电池图标 + 电量百分比 -->
@@ -301,6 +305,10 @@ background:var(--ok);border-radius:2px;transition:width .3s,background .3s"></di
 </div>
 <div id="battna" style="display:none;font-size:12px;color:var(--dim)">
 未检测到 IP5108 电量计（可能未接电池或芯片处于 LED 指示模式）。</div>
+<!-- I2C 诊断结果面板 -->
+<div id="diagbox" style="display:none;margin-top:10px;padding:10px 12px;
+background:#0a0c10;border:1px solid var(--line);border-radius:6px;
+font-size:12px;line-height:1.9"></div>
 </div>
 
 <div class="card">
@@ -832,6 +840,8 @@ let channel='http';          /* 'http' | 'ble' */
 const CMD_MAP={
 '/api/status':'status',
 '/api/battery':'battery.get',
+'/api/battery/diag':'battery.diag',
+'/api/battery/refresh':'battery.refresh',
 '/api/led':'led.set',
 '/api/led/effect':'led.effect',
 '/api/led/brightness':'led.brightness',
@@ -1114,8 +1124,22 @@ catch(e){log('刷新失败: '+e,true);
 document.getElementById('dot').className='dot err';}}
 
 /* --- 电池信息渲染 --- */
-async function refreshBattery(){
-const b=await getCmd('battery.get',null,true);
+async function refreshBattery(manual){
+/*
+ * manual=true 表示用户点了「刷新电池」——此时先让设备重新探测 I2C
+ * (battery.refresh)，再读取；否则只读当前状态 (轮询用，开销小)。
+ */
+let b;
+if(manual){
+log('正在重新探测电量计...');
+b=await post('/api/battery/refresh',{});
+if(b&&b.reinit===false){
+log('重新探测失败: '+(b.error||'未检测到设备'),true);}
+else if(b){log('电量计已重新连接');}
+}
+else{
+b=await getCmd('battery.get',null,true);
+}
 const wrap=document.getElementById('battwrap');
 const na=document.getElementById('battna');
 if(!b||!b.available){
@@ -1171,6 +1195,52 @@ flag(b.button_pressed,'按键按下');
 flag(b.button_long,'长按');
 flag(b.button_short,'短按');
 document.getElementById('battflags').innerHTML=flags.join(' &nbsp; ');}
+
+/* --- I2C 总线诊断 --- */
+async function batteryDiag(){
+const box=document.getElementById('diagbox');
+box.style.display='block';
+box.innerHTML='<span style="color:var(--dim)">正在诊断 I2C 总线...</span>';
+log('开始 I2C 诊断');
+
+const d=await post('/api/battery/diag',{});
+if(!d){
+box.innerHTML='<span style="color:#e74c3c">诊断失败（命令无响应）</span>';
+return;}
+
+/* 判定结论 -> 颜色与建议 */
+const V={
+ok:['var(--ok)','✓ 通信正常','上拉充足，芯片已进入 I2C 模式。'],
+ok_100k:['var(--ok)','✓ 100kHz 通信正常 (当前默认档位)',
+'400kHz 失败说明上拉偏弱或总线电容偏大。当前低速档可正常工作。'],
+pullup_weak:['#e67e22','⚠ 仅 50kHz 可用 → 上拉严重不足',
+'请给 SCL/SDA 加装外部上拉电阻 (2.2k-10k 到 VREG)。'],
+addr_mismatch:['#e67e22','⚠ 总线有设备但 0x75 不应答',
+'确认 IP5108 从机地址，或检查其供电/使能引脚。'],
+no_pullup:['#e74c3c','✗ 引脚未被拉高 → 上拉缺失或接线断开',
+'空闲时 SCL/SDA 必须为高电平。请检查上拉电阻与接线。'],
+not_in_i2c_mode:['#e74c3c','✗ 电平正常但无任何应答',
+'最可能是 IP5108 未进入 I2C 模式。芯片只在 sleep→wake 瞬间检测 '+
+'SCL/SDA 是否上拉到 VREG，失败则退回 LED 指示模式且本次供电周期内无法恢复。'+
+'对策: 断开再接入电池/充电器触发一次 wake。']};
+const v=V[d.verdict]||['var(--dim)','未知结论',''];
+
+const yn=(b)=>b?'<span style="color:var(--ok)">✓ 是</span>'
+:'<span style="color:#e74c3c">✗ 否</span>';
+
+box.innerHTML=
+'<div style="color:'+v[0]+';font-weight:600;margin-bottom:6px">'+v[1]+'</div>'
++'<div style="color:var(--dim);margin-bottom:8px">'+v[2]+'</div>'
++'<div style="border-top:1px dashed var(--line);padding-top:8px">'
++'SCL 空闲电平: '+yn(d.scl_high)+' &nbsp; SDA 空闲电平: '+yn(d.sda_high)+'<br>'
++'扫描到设备: <b>'+(d.scan_count||0)+'</b> 个'
++(d.found_addr?' (首个 0x'+(d.found_addr).toString(16).toUpperCase().padStart(2,'0')+')':'')
++'<br>'
++'探测 0x75: 50kHz '+yn(d.probe_50k)+' &nbsp; 100kHz '+yn(d.probe_100k)
++' &nbsp; 400kHz '+yn(d.probe_400k)+'<br>'
++'INT 引脚: '+(d.int_level<0?'未配置':(d.int_level?'高 (已进入 I2C 模式)':'低 (未进入 I2C 模式)'))
++'</div>';
+log('诊断完成: '+v[1]);}
 
 function reboot(){if(!confirm('确定重启设备？'))return;
 log('设备重启中，请稍后刷新');

@@ -511,7 +511,11 @@ curl -X POST --data-binary @full.json http://192.168.4.1/api/config
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/battery` | 读取电池状态 |
+| POST | `/api/battery/refresh` | 重新探测 I2C 并读取（前端「刷新电池」） |
+| POST | `/api/battery/diag` | I2C 总线诊断（前端「I2C 诊断」） |
 | BLE | `{"cmd":"battery.get"}` | 同上 |
+| BLE | `{"cmd":"battery.refresh"}` | 同上 |
+| BLE | `{"cmd":"battery.diag"}` | 同上 |
 
 响应示例：
 
@@ -553,7 +557,12 @@ curl -X POST --data-binary @full.json http://192.168.4.1/api/config
 
 #### I2C 协议要点
 
-- 从机地址 **0x75**（7-bit），速率 400 kHz
+- 从机地址 **0x75**（7-bit）
+- **默认速率 100 kHz（低速）**，探测失败时降到 50 kHz 重试
+  - 不用 400kHz 作默认: 板子上拉阻值/走线电容往往不理想，高速下上升沿
+    过慢会直接通信失败；100kHz 容错高得多
+  - 电池刷新是秒级操作，低速完全不影响体验
+  - 若总线条件良好，可改用 `BATTERY_IP5108_I2C_FREQ_FAST` (400kHz)
 - ADC 为 14-bit，各占 2 字节（低字节在前）
 
 | 寄存器 | 含义 |
@@ -574,6 +583,27 @@ curl -X POST --data-binary @full.json http://192.168.4.1/api/config
 > 来决定进入 I2C 还是 LED 指示模式，该决策在本次供电周期内不再改变。
 > 若硬件接了 INT(L3) 引脚，可把 `BATTERY_IP5108_INT_GPIO` 改为对应 GPIO，
 > 驱动会等其拉高后再访问总线，更可靠。
+
+#### I2C 诊断
+
+Web 页面「I2C 诊断」按钮（或 `POST /api/battery/diag`）会执行:
+
+1. 检查 SCL/SDA 空闲电平（判断上拉是否存在）
+2. 扫描 0x08-0x77 全部地址，列出应答设备
+3. 在 **50k / 100k / 400k** 三档速率下分别探测 0x75
+4. 输出结论与建议
+
+| verdict | 含义 | 建议 |
+|---------|------|------|
+| `ok` | 400kHz 正常 | 上拉充足 |
+| `ok_100k` | 100kHz 正常（当前默认档） | 上拉偏弱，低速可用 |
+| `pullup_weak` | 仅 50kHz 可用 | 加装外部上拉 2.2k-10k 到 VREG |
+| `addr_mismatch` | 有设备但 0x75 不应答 | 确认地址/供电 |
+| `no_pullup` | 引脚未被拉高 | 上拉缺失或接线断开 |
+| `not_in_i2c_mode` | 电平正常但无应答 | 芯片未进入 I2C 模式，触发一次 wake |
+
+「刷新电池」按钮（`POST /api/battery/refresh`）会先销毁并重建 I2C 总线、
+重新探测芯片，再读取数据 —— 首次初始化失败后无需重启设备即可重试。
 
 ### 配置持久化（断电保存）灯珠状态采用**手动保存**：调整后点「保存当前配置」才写入 NVS，
 断电重启后自动恢复。不保存则重启后回到上次保存的状态。
