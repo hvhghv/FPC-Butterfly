@@ -122,11 +122,25 @@ extern const char *const led_effect_names[LED_EFFECT_MAX];
  *
  * 把若干步骤按时长依次播放，播完最后一步后回到第一步，无限循环。
  * 例如「1 秒静态 -> 1 秒闪烁 -> 1 秒呼吸」就是三步的序列。
+ *
+ * 每步可**独立指定颜色与亮度**，实现「暗红呼吸 -> 亮绿闪烁 -> 蓝色彩虹」
+ * 这类多彩循环。use_color 为 false 时沿用灯珠的全局颜色与亮度。
  */
 typedef struct {
     uint8_t  effect;        /*!< 该步骤的效果 led_effect_t */
     uint32_t duration_ms;   /*!< 该步骤持续时长 (毫秒)，10 - 600000 */
     uint32_t period_ms;     /*!< 该步骤内效果的周期 (毫秒)，0 = 用 duration */
+    /*
+     * 该步骤的颜色与亮度。
+     *
+     * use_color 为 true 时用 rgb/brightness 覆盖灯珠全局设置；
+     * 为 false 时沿用灯珠全局颜色与亮度 (向后兼容旧配置)。
+     */
+    uint8_t  r;             /*!< 红色分量 (0-255) */
+    uint8_t  g;             /*!< 绿色分量 (0-255) */
+    uint8_t  b;             /*!< 蓝色分量 (0-255) */
+    uint8_t  brightness;    /*!< 该步骤亮度缩放 (0-255) */
+    bool     use_color;     /*!< 是否使用本步骤颜色与亮度 */
 } led_step_t;
 
 /**

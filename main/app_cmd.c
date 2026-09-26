@@ -175,8 +175,13 @@ static esp_err_t reply_ok(char *buf, size_t len)
 
 static esp_err_t cmd_status(char *out, size_t out_len)
 {
-    /* --- 灯珠状态 (含逐颗参数与序列) --- */
-    char leds[3000];
+    /* --- 灯珠状态 (含逐颗参数与序列) ---
+     *
+     * 缓冲区估算: 4 颗灯珠 × 8 步序列，每步含
+     * effect/duration/period/r/g/b/use_color ≈ 80 字节，
+     * 加上灯珠本体字段约 200 字节/颗，总计约 3.4KB，取 4096 留足余量。
+     */
+    char leds[4096];
     esp_err_t err = led_ctrl_to_json(leds, sizeof(leds));
     if (err != ESP_OK) {
         return reply_error(out, out_len, "读取灯珠状态失败");
@@ -552,9 +557,29 @@ static esp_err_t cmd_led_sequence(const char *json, char *out, size_t out_len)
             per = app_cmd_clamp(per, 100, 60000);
         }
 
+        /*
+         * 颜色与亮度 (可选)。
+         *
+         * 三个颜色通道都提供才视为"指定颜色"；否则该步骤沿用灯珠
+         * 全局颜色与亮度。这样旧前端 (只发 effect/duration/period)
+         * 行为完全不变。
+         */
+        long sr = 0, sg = 0, sb = 0;
+        bool has_rgb = app_cmd_get_int(obj, "r", &sr) &
+                       app_cmd_get_int(obj, "g", &sg) &
+                       app_cmd_get_int(obj, "b", &sb);
+
+        long sbri = 255;
+        bool has_bri = app_cmd_get_int(obj, "brightness", &sbri);
+
         steps[count].effect      = (uint8_t)eff;
         steps[count].duration_ms = (uint32_t)dur;
         steps[count].period_ms   = (uint32_t)per;
+        steps[count].r           = (uint8_t)app_cmd_clamp(sr, 0, 255);
+        steps[count].g           = (uint8_t)app_cmd_clamp(sg, 0, 255);
+        steps[count].b           = (uint8_t)app_cmd_clamp(sb, 0, 255);
+        steps[count].brightness  = (uint8_t)app_cmd_clamp(sbri, 0, 255);
+        steps[count].use_color   = has_rgb;
         count++;
 
         p = obj_end + 1;
@@ -1205,8 +1230,10 @@ static esp_err_t cmd_ble_pin(const char *json, char *out, size_t out_len)
  * 导入时密码字段可选 —— 不提供则保留设备当前密码。
  * ========================================================================== */
 
-/** 配置格式版本 (将来结构变更时用于兼容处理) */
-#define CFG_VERSION  1
+/** 配置格式版本 (将来结构变更时用于兼容处理)
+ *  v2: 效果序列每步增加颜色与亮度 (r/g/b/brightness/use_color)
+ */
+#define CFG_VERSION  2
 
 /**
  * @brief 导出配置
@@ -1275,11 +1302,16 @@ static esp_err_t cmd_config_export(const char *json, char *out, size_t out_len)
         for (uint8_t k = 0; k < cnt; k++) {
             n += snprintf(out + n, out_len - (size_t)n,
                           "%s{\"effect\":\"%s\",\"duration\":%" PRIu32 ","
-                          "\"period\":%" PRIu32 "}",
+                          "\"period\":%" PRIu32 ","
+                          "\"r\":%u,\"g\":%u,\"b\":%u,\"brightness\":%u,"
+                          "\"use_color\":%s}",
                           k ? "," : "",
                           (steps[k].effect < LED_EFFECT_MAX)
                               ? led_effect_names[steps[k].effect] : "none",
-                          steps[k].duration_ms, steps[k].period_ms);
+                          steps[k].duration_ms, steps[k].period_ms,
+                          steps[k].r, steps[k].g, steps[k].b,
+                          steps[k].brightness,
+                          steps[k].use_color ? "true" : "false");
             if (n >= (int)out_len) {
                 return reply_error(out, out_len, "配置过长");
             }
@@ -1408,7 +1440,8 @@ static esp_err_t apply_led_from_json(const char *obj, uint8_t idx)
                 }
 
                 size_t olen = (size_t)(end - sp) + 1;
-                char sobj[160];
+                /* 步骤对象含 effect/duration/period/r/g/b/use_color，约 120 字节 */
+                char sobj[256];
                 if (olen >= sizeof(sobj)) {
                     break;      /* 步骤过长，跳过 */
                 }
@@ -1432,10 +1465,24 @@ static esp_err_t apply_led_from_json(const char *obj, uint8_t idx)
                 app_cmd_get_int(sobj, "duration", &dur);
                 app_cmd_get_int(sobj, "period", &per);
 
+                /* 颜色与亮度 (可选): 三通道齐全才视为指定颜色 */
+                long sr = 0, sg = 0, sb = 0;
+                bool has_rgb = app_cmd_get_int(sobj, "r", &sr) &
+                               app_cmd_get_int(sobj, "g", &sg) &
+                               app_cmd_get_int(sobj, "b", &sb);
+
+                long sbri = 255;
+                app_cmd_get_int(sobj, "brightness", &sbri);
+
                 steps[count].effect      = (uint8_t)seff;
                 steps[count].duration_ms = (uint32_t)app_cmd_clamp(dur, 10, 600000);
                 steps[count].period_ms   = (uint32_t)((per != 0)
                                             ? app_cmd_clamp(per, 100, 60000) : 0);
+                steps[count].r           = (uint8_t)app_cmd_clamp(sr, 0, 255);
+                steps[count].g           = (uint8_t)app_cmd_clamp(sg, 0, 255);
+                steps[count].b           = (uint8_t)app_cmd_clamp(sb, 0, 255);
+                steps[count].brightness  = (uint8_t)app_cmd_clamp(sbri, 0, 255);
+                steps[count].use_color   = has_rgb;
                 count++;
 
                 sp = end + 1;

@@ -78,7 +78,7 @@ static const char *TAG = "led_ctrl";
 #define LED_NVS_KEY_STATE   "state"
 
 /** 持久化数据版本 (结构变更时递增) */
-#define LED_NVS_VERSION     1
+#define LED_NVS_VERSION     2
 
 /**
  * @brief 持久化记录 (与运行期 led_state_t 解耦)
@@ -365,17 +365,19 @@ static void hue_to_rgb(uint32_t hue_deg, uint8_t *r, uint8_t *g, uint8_t *b)
  *   1. 单效果: 效果取自 s_state.effect[idx]
  *   2. 效果序列: 效果取自当前步骤的 steps[idx][step_idx].effect
  *
- * @param idx     灯珠索引 (仅用于彩虹/流水的错位计算)
- * @param effect  效果类型
- * @param phase   相位 (0.0 - 1.0)
+ * @param idx       灯珠索引 (仅用于彩虹/流水的错位计算)
+ * @param effect    效果类型
+ * @param phase     相位 (0.0 - 1.0)
+ * @param base_rgb  基准颜色 (3 字节，R/G/B)。序列步骤可覆盖灯珠全局颜色
  * @param[out] r/g/b 输出颜色 (0-255，未应用亮度)
  */
 static void effect_color_ex(uint8_t idx, uint8_t effect, float phase,
+                            const uint8_t *base_rgb,
                             uint8_t *r, uint8_t *g, uint8_t *b)
 {
-    *r = s_state.rgb[idx][LED_COLOR_R];
-    *g = s_state.rgb[idx][LED_COLOR_G];
-    *b = s_state.rgb[idx][LED_COLOR_B];
+    *r = base_rgb[LED_COLOR_R];
+    *g = base_rgb[LED_COLOR_G];
+    *b = base_rgb[LED_COLOR_B];
 
     switch ((led_effect_t)effect) {
     case LED_EFFECT_NONE:
@@ -411,10 +413,10 @@ static void effect_color_ex(uint8_t idx, uint8_t effect, float phase,
         uint8_t hr, hg, hb;
         hue_to_rgb(hue, &hr, &hg, &hb);
 
-        /* 按灯珠设定颜色的最大分量做缩放，保留"整体色调"意图 */
-        uint8_t peak = s_state.rgb[idx][LED_COLOR_R];
-        if (s_state.rgb[idx][LED_COLOR_G] > peak) peak = s_state.rgb[idx][LED_COLOR_G];
-        if (s_state.rgb[idx][LED_COLOR_B] > peak) peak = s_state.rgb[idx][LED_COLOR_B];
+        /* 按基准颜色的最大分量做缩放，保留"整体色调"意图 */
+        uint8_t peak = base_rgb[LED_COLOR_R];
+        if (base_rgb[LED_COLOR_G] > peak) peak = base_rgb[LED_COLOR_G];
+        if (base_rgb[LED_COLOR_B] > peak) peak = base_rgb[LED_COLOR_B];
         if (peak == 0) {
             peak = 255;     /* 未设定颜色时以全亮彩虹显示 */
         }
@@ -474,6 +476,8 @@ static void led_task(void *arg)
     while (s_task_run) {
         uint8_t  r[LED_CTRL_COUNT], g[LED_CTRL_COUNT], b[LED_CTRL_COUNT];
         uint8_t  brightness[LED_CTRL_COUNT];
+        /* 本帧实际生效的亮度: 序列步骤可覆盖灯珠全局亮度 */
+        uint8_t  eff_bri[LED_CTRL_COUNT];
         bool     enabled[LED_CTRL_COUNT];
         bool     invert;
         bool     off;
@@ -492,6 +496,8 @@ static void led_task(void *arg)
         for (uint8_t i = 0; i < LED_CTRL_COUNT; i++) {
             uint8_t  eff;
             uint32_t p;
+            uint8_t  base[LED_CTRL_CH_PER_LED];
+            uint8_t  bri = brightness[i];   /* 默认用灯珠全局亮度 */
 
             if (s_state.step_count[i] > 0) {
                 /* --- 序列模式: 按当前步骤的效果与周期播放 --- */
@@ -505,6 +511,19 @@ static void led_task(void *arg)
                 p   = st->period_ms ? st->period_ms : st->duration_ms;
                 if (p == 0) {
                     p = LED_DEFAULT_PERIOD_MS;
+                }
+
+                /*
+                 * 基准颜色与亮度: 步骤指定了就用它，否则沿用灯珠全局设置。
+                 * 这样旧配置 (use_color=false) 行为完全不变。
+                 */
+                if (st->use_color) {
+                    base[LED_COLOR_R] = st->r;
+                    base[LED_COLOR_G] = st->g;
+                    base[LED_COLOR_B] = st->b;
+                    bri = st->brightness;
+                } else {
+                    memcpy(base, s_state.rgb[i], sizeof(base));
                 }
 
                 /* 相位按当前步骤的周期循环 */
@@ -525,11 +544,15 @@ static void led_task(void *arg)
                 eff = s_state.effect[i];
                 p   = s_state.period_ms[i] ? s_state.period_ms[i]
                                            : LED_DEFAULT_PERIOD_MS;
+                memcpy(base, s_state.rgb[i], sizeof(base));
                 s_phase_ms[i] = (s_phase_ms[i] + LED_REFRESH_MS) % p;
             }
 
             float phase = (float)s_phase_ms[i] / (float)p;
-            effect_color_ex(i, eff, phase, &r[i], &g[i], &b[i]);
+            effect_color_ex(i, eff, phase, base, &r[i], &g[i], &b[i]);
+
+            /* 记录该灯珠本帧生效的亮度 (序列步骤可能覆盖) */
+            eff_bri[i] = bri;
         }
 
         xSemaphoreGive(s_lock);
@@ -541,9 +564,9 @@ static void led_task(void *arg)
                 continue;
             }
             apply_led(i,
-                      apply_brightness(r[i], brightness[i]),
-                      apply_brightness(g[i], brightness[i]),
-                      apply_brightness(b[i], brightness[i]),
+                      apply_brightness(r[i], eff_bri[i]),
+                      apply_brightness(g[i], eff_bri[i]),
+                      apply_brightness(b[i], eff_bri[i]),
                       invert);
         }
 
@@ -1535,16 +1558,21 @@ esp_err_t led_ctrl_to_json(char *buf, size_t buf_len)
             return ESP_ERR_INVALID_SIZE;
         }
 
-        /* 效果序列: 每步 {effect, duration, period} */
+        /* 效果序列: 每步 {effect, duration, period, r/g/b, brightness, use_color} */
         for (uint8_t k = 0; k < step_count[i]; k++) {
             n += snprintf(buf + n, buf_len - (size_t)n,
                           "%s{\"effect\":\"%s\",\"duration\":%" PRIu32 ","
-                          "\"period\":%" PRIu32 "}",
+                          "\"period\":%" PRIu32 ","
+                          "\"r\":%u,\"g\":%u,\"b\":%u,\"brightness\":%u,"
+                          "\"use_color\":%s}",
                           k ? "," : "",
                           (steps[i][k].effect < LED_EFFECT_MAX)
                               ? led_effect_names[steps[i][k].effect] : "none",
                           steps[i][k].duration_ms,
-                          steps[i][k].period_ms);
+                          steps[i][k].period_ms,
+                          steps[i][k].r, steps[i][k].g, steps[i][k].b,
+                          steps[i][k].brightness,
+                          steps[i][k].use_color ? "true" : "false");
 
             if (n >= (int)buf_len) {
                 return ESP_ERR_INVALID_SIZE;

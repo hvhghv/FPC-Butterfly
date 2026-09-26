@@ -51,9 +51,9 @@ extern "C" {
  * 命令响应缓冲区建议长度。
  *
  * status 与 config.export 响应最大 —— 后者含 4 颗灯珠 × 8 步序列
- * 加 WiFi 配置，约 2.5KB，取 4KB 留足余量。
+ * (每步带独立颜色) 加 WiFi 配置，约 4KB，取 8KB 留足余量。
  */
-#define APP_CMD_RESP_MAX    4096
+#define APP_CMD_RESP_MAX    8192
 
 /**
  * @brief 命令来源通道

@@ -55,24 +55,67 @@ gap:8px;margin:6px 0;font-size:13px}
 .seq .sh{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--dim);margin-bottom:6px}
 /*
  * 步骤行: 用 grid 固定各列宽度, 避免 flex 在窄容器里把输入框压扁。
- *   序号 | 效果(自适应) | 时长 | 周期 | 删除
+ *   序号 | 效果(自适应) | 时长 | 周期 | 颜色 | 亮度 | 删除
  * 时长/周期列固定 64px, 保证 "1000" 这类 4 位数完整显示。
  */
-.step{display:grid;grid-template-columns:16px minmax(0,1fr) 64px 64px 22px;
+.step{display:grid;grid-template-columns:16px minmax(0,1fr) 62px 62px 30px 56px 22px;
  align-items:center;gap:5px;margin:4px 0;font-size:12px}
 .step .no{color:var(--dim);text-align:right}
 .step select,.step input{width:100%;min-width:0;padding:3px 5px;font-size:12px}
 /* 步骤列表表头: 与 .step 同列宽, 标注各列含义 */
-.stephead{display:grid;grid-template-columns:16px minmax(0,1fr) 64px 64px 22px;
+.stephead{display:grid;grid-template-columns:16px minmax(0,1fr) 62px 62px 30px 56px 22px;
  gap:5px;font-size:10px;color:var(--dim);margin:2px 0 3px}
-.stephead span:nth-child(3),.stephead span:nth-child(4){text-align:center}
+.stephead span:nth-child(3),.stephead span:nth-child(4),
+.stephead span:nth-child(5),.stephead span:nth-child(6){text-align:center}
 .step .x{background:#39404f;color:var(--fg);border:0;border-radius:4px;width:22px;height:22px;
 line-height:1;padding:0;font-size:13px;cursor:pointer;margin:0}
 .step .x:hover{background:#c0392b}
+/*
+ * 颜色圆点按钮: 点击弹出色轮。
+ * 未启用颜色时显示斜线图案，表示"沿用全局颜色"。
+ */
+.cdot{width:26px;height:26px;border-radius:50%;border:2px solid var(--line);
+cursor:pointer;padding:0;margin:0;flex:none;position:relative;
+background:#000;transition:border-color .15s}
+.cdot:hover{border-color:var(--acc)}
+.cdot.none{background:repeating-linear-gradient(45deg,#2a2f3a,#2a2f3a 4px,#1a1e26 4px,#1a1e26 8px)}
+.cdot.none::after{content:'';position:absolute;inset:0;border-radius:50%;
+border:1px dashed #4a5364}
 .sbtns{display:flex;gap:6px;margin-top:7px}
 .sbtns button{flex:1;padding:5px 8px;font-size:12px;margin:0;white-space:nowrap}
 .seq .hint{font-size:11px;color:var(--dim);margin-top:5px}
 input[type=color]{width:44px;height:28px;border:1px solid var(--line);border-radius:4px;background:#0f1115;padding:2px;cursor:pointer}
+
+/* ============================================================================
+ * 色轮弹层 (HSV 圆盘 + 亮度滑条)
+ * ========================================================================== */
+.cwmask{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;
+display:none;align-items:center;justify-content:center}
+.cwmask.on{display:flex}
+.cwbox{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:14px 16px;box-shadow:0 8px 32px rgba(0,0,0,.6);width:280px}
+.cwbox h3{margin:0 0 10px;font-size:14px;color:#8ab4ff;font-weight:600}
+/* 色轮: canvas 绘制 HSV 圆盘, 中心为白(低饱和) */
+.cwwheel{position:relative;width:248px;height:248px;margin:0 auto 10px}
+.cwwheel canvas{width:248px;height:248px;border-radius:50%;cursor:crosshair;
+display:block;touch-action:none}
+/* 色轮上的圆形指示器 */
+.cwknob{position:absolute;width:16px;height:16px;border:2px solid #fff;
+border-radius:50%;pointer-events:none;transform:translate(-50%,-50%);
+box-shadow:0 0 0 1px rgba(0,0,0,.6),0 1px 4px rgba(0,0,0,.5)}
+/* 预览色块 + 十六进制 */
+.cwrow{display:flex;align-items:center;gap:10px;margin:8px 0}
+.cwprev{width:44px;height:32px;border-radius:6px;border:1px solid var(--line);flex:none}
+.cwhex{flex:1;font-family:ui-monospace,Consolas,monospace;font-size:12px;
+background:#0a0c10;color:var(--fg);border:1px solid var(--line);
+border-radius:5px;padding:5px 8px;min-width:0}
+.cwlab{font-size:12px;color:var(--dim);width:34px;flex:none}
+.cwbtns{display:flex;gap:8px;margin-top:12px}
+.cwbtns button{flex:1;margin:0}
+/* 圆点按钮 (用于灯珠主颜色) */
+.cwpick{width:44px;height:28px;border-radius:4px;border:1px solid var(--line);
+cursor:pointer;padding:0;margin:0;flex:none;position:relative;overflow:hidden}
+.cwpick:hover{border-color:var(--acc)}
 button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;margin:3px 5px 3px 0}
 button:hover{background:#3d7ef8}
 button.gray{background:#39404f}
@@ -346,6 +389,38 @@ font-size:12px;line-height:1.9"></div>
 </div>
 </div>
 
+<!-- ============================================================================
+     色轮弹层 (HSV 圆盘 + 亮度滑条)
+     
+     点击任意颜色圆点/色块打开，选定后回写到触发元素。
+     用 Canvas 绘制 HSV 色轮: 角度 = 色相 H, 半径 = 饱和度 S,
+     中心为白 (S=0) 边缘为纯色 (S=1)。亮度 V 由下方滑条控制。
+     ============================================================================ -->
+<div class="cwmask" id="cwmask" onclick="if(event.target===this)closeWheel()">
+<div class="cwbox">
+<h3 id="cwTitle">选择颜色</h3>
+<div class="cwwheel">
+<canvas id="cwcanvas" width="248" height="248"></canvas>
+<div class="cwknob" id="cwknob"></div>
+</div>
+<div class="cwrow">
+<div class="cwprev" id="cwprev"></div>
+<input class="cwhex" id="cwhex" maxlength="7" placeholder="#RRGGBB"
+onchange="cwHexInput()">
+</div>
+<div class="cwrow">
+<span class="cwlab">亮度</span>
+<input type="range" id="cwval" min="0" max="100" value="100"
+style="flex:1;min-width:0" oninput="cwValChange()">
+<span class="cwlab" id="cwvalv" style="width:34px;text-align:right">100</span>
+</div>
+<div class="cwbtns">
+<button onclick="cwConfirm()">确定</button>
+<button class="gray" onclick="closeWheel()">取消</button>
+</div>
+</div>
+</div>
+
 <script>
 const LEDS=[{id:1,name:'D1 左上翅膀',pos:'(17, 22) mm',gpio:'R=IO4 G=IO5 B=IO6'},
 {id:2,name:'D2 左下翅膀',pos:'(22, 39) mm',gpio:'R=IO0 G=IO1 B=IO7'},
@@ -362,6 +437,152 @@ Math.max(0,Math.min(255,v|0)).toString(16).padStart(2,'0')).join('');}
 function hex2rgb(h){return [parseInt(h.substr(1,2),16),parseInt(h.substr(3,2),16),
 parseInt(h.substr(5,2),16)];}
 
+/* ============================================================================
+ * 色轮选择器 (HSV 圆盘)
+ *
+ * 用 Canvas 绘制: 角度 = 色相 H (0-360), 半径 = 饱和度 S (0-1),
+ * 中心为白, 边缘为纯色。亮度 V 由弹层里的滑条单独控制。
+ *
+ * 打开时记录"回写目标"(一个回调), 确定后调用它把 RGB 交回调用方。
+ * ========================================================================== */
+
+/** 当前打开的色轮状态 */
+const CW={open:false,h:0,s:1,v:1,onPick:null,title:''};
+
+/** HSV -> RGB (h:0-360, s/v:0-1) */
+function hsv2rgb(h,s,v){
+const c=v*s, x=c*(1-Math.abs(((h/60)%2)-1)), m=v-c;
+let r,g,b;
+if(h<60){r=c;g=x;b=0;}
+else if(h<120){r=x;g=c;b=0;}
+else if(h<180){r=0;g=c;b=x;}
+else if(h<240){r=0;g=x;b=c;}
+else if(h<300){r=x;g=0;b=c;}
+else{r=c;g=0;b=x;}
+return [Math.round((r+m)*255),Math.round((g+m)*255),Math.round((b+m)*255)];}
+
+/** RGB -> HSV (h:0-360, s/v:0-1) */
+function rgb2hsv(r,g,b){
+r/=255;g/=255;b/=255;
+const mx=Math.max(r,g,b), mn=Math.min(r,g,b), d=mx-mn;
+let h=0;
+if(d!==0){
+if(mx===r)h=60*(((g-b)/d)%6);
+else if(mx===g)h=60*((b-r)/d+2);
+else h=60*((r-g)/d+4);
+if(h<0)h+=360;}
+return [h, mx===0?0:d/mx, mx];}
+
+/** 绘制色轮 (只在打开时画一次, 缓存到 canvas) */
+let cwDrawn=false;
+function drawWheel(){
+if(cwDrawn)return;
+const cv=document.getElementById('cwcanvas');
+const ctx=cv.getContext('2d');
+const R=cv.width/2;
+const img=ctx.createImageData(cv.width,cv.height);
+const d=img.data;
+for(let y=0;y<cv.height;y++){
+for(let x=0;x<cv.width;x++){
+const dx=x-R+0.5, dy=y-R+0.5;
+const dist=Math.sqrt(dx*dx+dy*dy);
+const i=(y*cv.width+x)*4;
+if(dist>R){d[i+3]=0;continue;}
+/* 角度 -> 色相, 半径 -> 饱和度 */
+let ang=Math.atan2(dy,dx)*180/Math.PI;
+if(ang<0)ang+=360;
+const [r,g,b]=hsv2rgb(ang,Math.min(1,dist/R),1);
+d[i]=r;d[i+1]=g;d[i+2]=b;d[i+3]=255;}}
+ctx.putImageData(img,0,0);
+cwDrawn=true;}
+
+/** 把当前 HSV 同步到指示器位置与预览 */
+function cwSync(){
+const cv=document.getElementById('cwcanvas');
+const R=cv.width/2;
+/* 指示器位置: 半径按饱和度, 角度按色相 */
+const rad=CW.s*R;
+const ang=CW.h*Math.PI/180;
+const kx=R+rad*Math.cos(ang), ky=R+rad*Math.sin(ang);
+const knob=document.getElementById('cwknob');
+knob.style.left=kx+'px';knob.style.top=ky+'px';
+
+const [r,g,b]=hsv2rgb(CW.h,CW.s,CW.v);
+const hex=rgb2hex(r,g,b);
+document.getElementById('cwprev').style.background=hex;
+document.getElementById('cwhex').value=hex;
+document.getElementById('cwval').value=Math.round(CW.v*100);
+document.getElementById('cwvalv').textContent=Math.round(CW.v*100);}
+
+/** 打开色轮
+ * @param title 弹层标题
+ * @param r/g/b 初始颜色
+ * @param onPick 确定后的回调 (r,g,b)
+ */
+function openWheel(title,r,g,b,onPick){
+drawWheel();
+const [h,s,v]=rgb2hsv(r,g,b);
+CW.h=h;CW.s=s;CW.v=v;CW.onPick=onPick;CW.title=title;CW.open=true;
+document.getElementById('cwTitle').textContent=title;
+cwSync();
+document.getElementById('cwmask').classList.add('on');}
+
+function closeWheel(){
+CW.open=false;CW.onPick=null;
+document.getElementById('cwmask').classList.remove('on');}
+
+/** 色轮上按下/拖动 */
+function cwPointer(e){
+const cv=document.getElementById('cwcanvas');
+const rect=cv.getBoundingClientRect();
+const R=cv.width/2;
+/* 换算到 canvas 内部坐标 (考虑 CSS 缩放) */
+const scale=cv.width/rect.width;
+const x=(e.clientX-rect.left)*scale;
+const y=(e.clientY-rect.top)*scale;
+const dx=x-R, dy=y-R;
+let ang=Math.atan2(dy,dx)*180/Math.PI;
+if(ang<0)ang+=360;
+const dist=Math.min(Math.sqrt(dx*dx+dy*dy),R);
+CW.h=ang;
+CW.s=dist/R;
+cwSync();}
+
+/** 亮度滑条 */
+function cwValChange(){
+CW.v=+document.getElementById('cwval').value/100;
+cwSync();}
+
+/** 十六进制输入框 */
+function cwHexInput(){
+const v=document.getElementById('cwhex').value.trim();
+if(!/^#[0-9a-fA-F]{6}$/.test(v)){cwSync();return;}
+const [r,g,b]=hex2rgb(v);
+const [h,s,val]=rgb2hsv(r,g,b);
+CW.h=h;CW.s=s;CW.v=val;
+cwSync();}
+
+/** 确定: 回写颜色 */
+function cwConfirm(){
+if(CW.onPick){
+const [r,g,b]=hsv2rgb(CW.h,CW.s,CW.v);
+CW.onPick(r,g,b);}
+closeWheel();}
+
+/* 色轮拖动事件 (只在弹层打开时绑定一次) */
+(function(){
+const cv=document.getElementById('cwcanvas');
+let dragging=false;
+cv.addEventListener('pointerdown',e=>{
+dragging=true;cv.setPointerCapture(e.pointerId);cwPointer(e);});
+cv.addEventListener('pointermove',e=>{if(dragging)cwPointer(e);});
+cv.addEventListener('pointerup',e=>{dragging=false;});
+cv.addEventListener('pointercancel',()=>{dragging=false;});
+/* ESC 关闭 */
+document.addEventListener('keydown',e=>{
+if(e.key==='Escape'&&CW.open)closeWheel();});
+})();
+
 const EFFECTS=[['none','静态'],['breath','呼吸'],['blink','闪烁'],
 ['rainbow','彩虹'],['chase','流水']];
 const MAX_STEPS=8;
@@ -373,7 +594,12 @@ box.innerHTML=LEDS.map(l=>`
 <div class="row"><label>R</label><input type="range" id="r${l.id}" min="0" max="255" value="0" oninput="sync(${l.id})"><span class="val" id="rv${l.id}">0</span></div>
 <div class="row"><label>G</label><input type="range" id="g${l.id}" min="0" max="255" value="0" oninput="sync(${l.id})"><span class="val" id="gv${l.id}">0</span></div>
 <div class="row"><label>B</label><input type="range" id="b${l.id}" min="0" max="255" value="0" oninput="sync(${l.id})"><span class="val" id="bv${l.id}">0</span></div>
-<div class="row"><input type="color" id="c${l.id}" value="#000000" oninput="pick(${l.id})"><span class="ps">${l.gpio}</span></div>
+<div class="row">
+<button class="cwpick" id="c${l.id}" title="点击打开色轮选色"
+onclick="pick(${l.id})"></button>
+<input type="color" id="cn${l.id}" value="#000000" title="系统取色器"
+oninput="pickNative(${l.id})">
+<span class="ps">${l.gpio}</span></div>
 <div class="adv">
 <div class="row"><label>亮度</label><input type="range" id="lb${l.id}" min="0" max="255" value="255" oninput="lbV(${l.id})" onchange="setLedBrightness(${l.id})"><span class="val" id="lbv${l.id}">255</span></div>
 <div class="row"><label>效果</label><select id="le${l.id}" onchange="setLedEffect(${l.id})">
@@ -400,10 +626,26 @@ const b=+document.getElementById('b'+id).value;
 document.getElementById('rv'+id).textContent=r;
 document.getElementById('gv'+id).textContent=g;
 document.getElementById('bv'+id).textContent=b;
-document.getElementById('c'+id).value=rgb2hex(r,g,b);
+const hex=rgb2hex(r,g,b);
+/* 同步圆点按钮与系统取色器 */
+document.getElementById('c'+id).style.background=hex;
+document.getElementById('cn'+id).value=hex;
 post('/api/led',{id:id-1,r:r,g:g,b:b});}
 
-function pick(id){const [r,g,b]=hex2rgb(document.getElementById('c'+id).value);
+/* 点击圆点 -> 打开色轮 */
+function pick(id){
+const r=+document.getElementById('r'+id).value;
+const g=+document.getElementById('g'+id).value;
+const b=+document.getElementById('b'+id).value;
+openWheel('D'+id+' 颜色',r,g,b,(nr,ng,nb)=>{
+document.getElementById('r'+id).value=nr;
+document.getElementById('g'+id).value=ng;
+document.getElementById('b'+id).value=nb;
+sync(id);});}
+
+/* 系统原生取色器 (保留作为备选) */
+function pickNative(id){
+const [r,g,b]=hex2rgb(document.getElementById('cn'+id).value);
 document.getElementById('r'+id).value=r;document.getElementById('g'+id).value=g;
 document.getElementById('b'+id).value=b;sync(id);}
 
@@ -442,25 +684,70 @@ function setLedEnable(id){
 post('/api/led/enable',{id:id-1,enabled:document.getElementById('le'+id+'e').checked});}
 
 /* --- 效果序列编辑 --- */
-function stepRow(id,k,eff,dur,per){
+function stepRow(id,k,eff,dur,per,useColor,r,g,b,bri){
+/*
+ * 每步可选颜色与亮度。
+ *   - 点击颜色圆点打开色轮；未启用颜色时圆点显示斜线 (沿用全局颜色)
+ *   - 亮度滑条 0-255，未启用时禁用
+ */
+const hex=(useColor?rgb2hex(r,g,b):'#000000');
+const bv=(bri===undefined||bri===null)?255:bri;
 return `<div class="step" data-k="${k}">
 <span class="no">${k+1}</span>
 <select class="se">${EFFECTS.map(e=>
 `<option value="${e[0]}"${e[0]===eff?' selected':''}>${e[1]}</option>`).join('')}</select>
 <input class="sd" type="number" min="10" max="600000" step="100" value="${dur}" title="时长 ms" placeholder="时长">
 <input class="sp" type="number" min="0" max="60000" step="100" value="${per}" title="周期 ms (0=与时长相同)" placeholder="周期">
+<button class="cdot${useColor?'':' none'}" style="${useColor?'background:'+hex:''}"
+title="点击选色 (右键清除)" onclick="stepPickColor(${id},${k})"
+oncontextmenu="stepClearColor(${id},${k});return false"></button>
+<input class="sb" type="range" min="0" max="255" value="${bv}"
+${useColor?'':'disabled'} title="本步亮度"
+oninput="stepBriV(this)" onchange="markStepColor(this)">
 <button class="x" onclick="delStep(${id},${k})" title="删除">×</button>
 </div>`;}
 
-function addStep(id,eff,dur,per){
+/** 步骤亮度滑条实时显示 (title 提示) */
+function stepBriV(inp){inp.title='本步亮度 '+inp.value;}
+
+/** 点击步骤颜色圆点 -> 打开色轮 */
+function stepPickColor(id,k){
+const row=document.querySelector('#sq'+id+' .step[data-k="'+k+'"]');
+const btn=row.querySelector('.cdot');
+const cur=btn.classList.contains('none')?'#ffffff':btn.style.background;
+const [r,g,b]=hex2rgb(cur.startsWith('#')?cur:'#ffffff');
+openWheel('D'+id+' 第 '+(k+1)+' 步颜色',r,g,b,(nr,ng,nb)=>{
+btn.classList.remove('none');
+btn.style.background=rgb2hex(nr,ng,nb);
+/* 启用颜色后同时启用亮度滑条 */
+row.querySelector('.sb').disabled=false;});}
+
+/** 右键清除步骤颜色 (回到沿用全局颜色) */
+function stepClearColor(id,k){
+const row=document.querySelector('#sq'+id+' .step[data-k="'+k+'"]');
+const btn=row.querySelector('.cdot');
+btn.classList.add('none');
+btn.style.background='';
+row.querySelector('.sb').disabled=true;}
+
+/* 改动亮度时自动启用该步颜色 (亮度需要配合颜色才有意义) */
+function markStepColor(inp){
+const row=inp.closest('.step');
+const btn=row.querySelector('.cdot');
+if(btn.classList.contains('none')){
+btn.classList.remove('none');
+btn.style.background='#ffffff';}}
+
+function addStep(id,eff,dur,per,useColor,r,g,b,bri){
 const box=document.getElementById('sq'+id);
 const k=box.querySelectorAll('.step').length;
 if(k>=MAX_STEPS){log('最多 '+MAX_STEPS+' 个步骤');return;}
 /* 首个步骤时插入表头, 说明各列含义 */
 if(k===0){box.insertAdjacentHTML('beforeend',
-'<div class="stephead"><span></span><span>效果</span><span>时长ms</span><span>周期ms</span><span></span></div>');}
+'<div class="stephead"><span></span><span>效果</span><span>时长ms</span>'+
+'<span>周期ms</span><span>颜色</span><span>亮度</span><span></span></div>');}
 box.insertAdjacentHTML('beforeend',
-stepRow(id,k,eff||'none',dur||1000,per||0));}
+stepRow(id,k,eff||'none',dur||1000,per||0,useColor,r,g,b,bri));}
 
 function delStep(id,k){
 const box=document.getElementById('sq'+id);
@@ -478,10 +765,17 @@ el.querySelector('.x').setAttribute('onclick',`delStep(${id},${i})`);});}
 
 function readSteps(id){
 const box=document.getElementById('sq'+id);
-return [...box.querySelectorAll('.step')].map(el=>({
+return [...box.querySelectorAll('.step')].map(el=>{
+const btn=el.querySelector('.cdot');
+const useColor=!btn.classList.contains('none');
+const [r,g,b]=hex2rgb(btn.style.background||'#ffffff');
+const bri=+el.querySelector('.sb').value;
+return {
 effect:el.querySelector('.se').value,
 duration:+el.querySelector('.sd').value||1000,
-period:+el.querySelector('.sp').value||0}));}
+period:+el.querySelector('.sp').value||0,
+/* 未启用颜色时不下发颜色/亮度, 让设备沿用全局设置 */
+...(useColor?{r:r,g:g,b:b,brightness:bri}:{})};});}
 
 function applySeq(id){
 const steps=readSteps(id);
@@ -1043,7 +1337,9 @@ if(d.leds){d.leds.forEach(l=>{const i=l.id;
 document.getElementById('r'+i).value=l.r;document.getElementById('g'+i).value=l.g;
 document.getElementById('b'+i).value=l.b;document.getElementById('rv'+i).textContent=l.r;
 document.getElementById('gv'+i).textContent=l.g;document.getElementById('bv'+i).textContent=l.b;
-document.getElementById('c'+i).value=rgb2hex(l.r,l.g,l.b);
+const hex=rgb2hex(l.r,l.g,l.b);
+document.getElementById('c'+i).style.background=hex;
+document.getElementById('cn'+i).value=hex;
 /* 逐颗高级参数 */
 document.getElementById('lb'+i).value=l.brightness;
 document.getElementById('lbv'+i).textContent=l.brightness;
@@ -1055,7 +1351,8 @@ document.getElementById('card'+i).className='led'+(l.enabled?'':' off');
 const sq=document.getElementById('sq'+i);
 if(!sq.matches(':focus-within')){
 sq.innerHTML='';(l.steps||[]).forEach((s,k)=>
-addStep(i,s.effect,s.duration,s.period));
+addStep(i,s.effect,s.duration,s.period,
+s.use_color,s.r,s.g,s.b,s.brightness));
 document.getElementById('sqs'+i).textContent=
 (l.steps&&l.steps.length)?(l.steps.length+' 步'):'未设置';}});}
 document.getElementById('bri').value=d.brightness;briV();
