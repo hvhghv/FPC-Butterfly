@@ -291,6 +291,12 @@ static esp_err_t handler_upgrade(httpd_req_t *req)
     return run_cmd(req, "upgrade", NULL);
 }
 
+/** GET /api/battery — 读取 IP5108 电池信息 */
+static esp_err_t handler_battery(httpd_req_t *req)
+{
+    return run_cmd(req, "battery.get", NULL);
+}
+
 /** GET /api/wifi — 读取 WiFi 配置与 STA 状态 */
 static esp_err_t handler_wifi_get(httpd_req_t *req)
 {
@@ -385,6 +391,7 @@ static esp_err_t handler_catch_all(httpd_req_t *req)
 static const httpd_uri_t s_uris[] = {
     { .uri = "/",              .method = HTTP_GET,  .handler = handler_index },
     { .uri = "/api/status",    .method = HTTP_GET,  .handler = handler_status },
+    { .uri = "/api/battery",   .method = HTTP_GET,  .handler = handler_battery },
     { .uri = "/api/led",       .method = HTTP_POST, .handler = handler_led },
     { .uri = "/api/led/effect",.method = HTTP_POST, .handler = handler_led_effect },
     { .uri = "/api/led/brightness", .method = HTTP_POST, .handler = handler_led_brightness },

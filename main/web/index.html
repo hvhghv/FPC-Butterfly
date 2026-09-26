@@ -273,6 +273,37 @@ resize:vertical;display:none"></textarea>
 </div>
 
 <div class="card">
+<h2>电池信息 <span class="ps" style="font-weight:400">(IP5108 电量计)</span></h2>
+<div id="battwrap">
+<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px">
+<!-- 电池图标 + 电量百分比 -->
+<div id="batticon" style="position:relative;width:64px;height:30px;border:2px solid var(--line);
+border-radius:5px;flex:none;background:#0a0c10">
+<div id="battfill" style="position:absolute;left:2px;top:2px;bottom:2px;width:0%;
+background:var(--ok);border-radius:2px;transition:width .3s,background .3s"></div>
+<div style="position:absolute;right:-5px;top:9px;width:3px;height:10px;background:var(--line);border-radius:0 2px 2px 0"></div>
+</div>
+<div style="flex:none">
+<div id="battpct" style="font-size:26px;font-weight:700;line-height:1.1">—</div>
+<div id="battstate" style="font-size:12px;color:var(--dim)">—</div>
+</div>
+</div>
+<div class="grid" id="battgrid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+<div class="led"><div class="hd"><span class="nm">电压</span></div><div class="ps" id="batt_v">—</div></div>
+<div class="led"><div class="hd"><span class="nm">开路电压</span></div><div class="ps" id="batt_ocv">—</div></div>
+<div class="led"><div class="hd"><span class="nm">电流</span></div><div class="ps" id="batt_i">—</div></div>
+<div class="led"><div class="hd"><span class="nm">功率</span></div><div class="ps" id="batt_p">—</div></div>
+</div>
+<div class="adv">
+<div class="sh" style="font-size:12px;color:var(--dim);margin-bottom:6px">状态标志</div>
+<div id="battflags" style="font-size:12px;color:var(--dim);line-height:1.9">—</div>
+</div>
+</div>
+<div id="battna" style="display:none;font-size:12px;color:var(--dim)">
+未检测到 IP5108 电量计（可能未接电池或芯片处于 LED 指示模式）。</div>
+</div>
+
+<div class="card">
 <h2>设备信息</h2>
 <div class="grid" id="statgrid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
 <div class="led"><div class="hd"><span class="nm">WiFi 热点</span><span class="ps" id="st_apdot"></span></div>
@@ -800,6 +831,7 @@ let channel='http';          /* 'http' | 'ble' */
 /* HTTP 路径 -> 命令名 */
 const CMD_MAP={
 '/api/status':'status',
+'/api/battery':'battery.get',
 '/api/led':'led.set',
 '/api/led/effect':'led.effect',
 '/api/led/brightness':'led.brightness',
@@ -969,7 +1001,8 @@ const req=Object.assign({cmd:cmd},params||{});
 const resp=await bleRequest(JSON.stringify(req));
 return JSON.parse(resp);}
 catch(e){if(!quiet)log(cmd+' 失败: '+e,true);return null;}}
-const map={'status':'/api/status','wifi.get':'/api/wifi','config.export':'/api/config'};
+const map={'status':'/api/status','wifi.get':'/api/wifi','config.export':'/api/config',
+'battery.get':'/api/battery'};
 const url=map[cmd]||('/api/'+cmd.replace('.','/'));
 try{
 /*
@@ -1069,6 +1102,9 @@ document.getElementById('st_ble').textContent=bleTxt;
 document.getElementById('st_sys').textContent=
 '运行 '+d.uptime+' 秒 · 空闲堆 '+d.heap+' 字节';
 
+/* 电池 (IP5108 电量计, 独立命令) */
+await refreshBattery();
+
 /* 同步服务开关按钮状态 (设备可能是被其他客户端改的) */
 const bleOn=!!(bl.running);
 const wifiOn=(d.ssid&&d.ssid.length>0);
@@ -1076,6 +1112,65 @@ if(bleOn!==svcBleOn||wifiOn!==svcWifiOn){
 svcBleOn=bleOn;svcWifiOn=wifiOn;updateSvcBtns();}}
 catch(e){log('刷新失败: '+e,true);
 document.getElementById('dot').className='dot err';}}
+
+/* --- 电池信息渲染 --- */
+async function refreshBattery(){
+const b=await getCmd('battery.get',null,true);
+const wrap=document.getElementById('battwrap');
+const na=document.getElementById('battna');
+if(!b||!b.available){
+/* 电量计不可用: 隐藏详情, 显示提示 */
+if(wrap)wrap.style.display='none';
+if(na)na.style.display='block';
+return;}
+if(wrap)wrap.style.display='block';
+if(na)na.style.display='none';
+
+/* 电量百分比 + 颜色 (低电量变红/橙) */
+const pct=(typeof b.percent==='number'&&b.percent>=0)?b.percent:null;
+const fill=document.getElementById('battfill');
+const pctEl=document.getElementById('battpct');
+if(pct===null){
+pctEl.textContent='—';
+fill.style.width='0%';}
+else{
+pctEl.textContent=pct+'%';
+fill.style.width=pct+'%';
+fill.style.background=pct<=15?'#e74c3c':(pct<=35?'#e67e22':'var(--ok)');}
+
+/* 充电状态文字 */
+let stTxt=b.charge_desc||'未知';
+if(b.charging)stTxt+=' ⚡';
+if(b.input_overvoltage)stTxt+=' · 输入过压';
+if(b.charge_timeout)stTxt+=' · 充电超时';
+document.getElementById('battstate').textContent=stTxt;
+
+/* 测量值 */
+document.getElementById('batt_v').textContent=(b.voltage||0).toFixed(3)+' V';
+document.getElementById('batt_ocv').textContent=(b.ocv||0).toFixed(3)+' V';
+const cur=b.current||0;
+document.getElementById('batt_i').textContent=
+(cur>=0?'+':'')+cur.toFixed(3)+' A '+(cur>0.005?'(充电)':(cur<-0.005?'(放电)':'(空闲)'));
+document.getElementById('batt_p').textContent=
+((b.voltage||0)*Math.abs(cur)).toFixed(2)+' W';
+
+/* 状态标志 */
+const flags=[];
+const flag=(on,txt)=>flags.push(
+'<span style="color:'+(on?'var(--ok)':'var(--dim)')+'">'+
+(on?'● ':'○ ')+txt+'</span>');
+flag(b.charging,'充电中');
+flag(b.charge_done,'充电完成');
+flag(b.load_connected,'负载接入');
+flag(b.light_load,'轻载');
+flag(b.input_overvoltage,'输入过压');
+flag(b.charge_timeout,'充电超时');
+flag(b.trickle_timeout,'涓流超时');
+flag(b.cv_timeout,'恒压超时');
+flag(b.button_pressed,'按键按下');
+flag(b.button_long,'长按');
+flag(b.button_short,'短按');
+document.getElementById('battflags').innerHTML=flags.join(' &nbsp; ');}
 
 function reboot(){if(!confirm('确定重启设备？'))return;
 log('设备重启中，请稍后刷新');

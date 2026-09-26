@@ -17,6 +17,7 @@
  *   {"cmd":"led.set",  "id":0,"r":255,"g":0,"b":0}
  *   {"cmd":"led.effect","id":0,"name":"breath","period":2000}
  *   {"cmd":"status"}
+ *   {"cmd":"battery.get"}                     读取电池信息 (IP5108)
  *   {"cmd":"wifi.get"}
  *   {"cmd":"config.export"}                    导出配置 (不含密码)
  *   {"cmd":"config.export","secrets":1}        导出配置 (含密码明文)

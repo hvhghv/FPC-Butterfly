@@ -45,6 +45,7 @@
 #include "app_wifi.h"
 #include "app_ble.h"
 #include "led_ctrl.h"
+#include "battery_ip5108.h"
 #include "app_cmd.h"
 
 static const char *TAG = "app_cmd";
@@ -664,6 +665,56 @@ static esp_err_t cmd_freq(const char *json, char *out, size_t out_len)
     }
 
     snprintf(out, out_len, "{\"ok\":true,\"freq\":%ld}", freq);
+    return ESP_OK;
+}
+
+/* ============================================================================
+ * 命令: battery.get — IP5108 电池信息
+ *
+ * 通过 I2C 读取移动电源 SoC (IP5108) 的电压/电流/电量/充电状态。
+ * 电量计不可用时返回 ok=true 但 available=false，前端据此显示"未知"，
+ * 避免把硬件缺失当成命令错误。
+ * ========================================================================== */
+
+static esp_err_t cmd_battery_get(char *out, size_t out_len)
+{
+    if (!battery_ip5108_available()) {
+        snprintf(out, out_len,
+                 "{\"ok\":true,\"available\":false}");
+        return ESP_OK;
+    }
+
+    battery_status_t st;
+    esp_err_t err = battery_ip5108_read(&st);
+    if (err != ESP_OK) {
+        return reply_error(out, out_len, esp_err_to_name(err));
+    }
+
+    snprintf(out, out_len,
+             "{\"ok\":true,\"available\":true,"
+             "\"voltage\":%.3f,\"ocv\":%.3f,\"current\":%.3f,"
+             "\"percent\":%d,"
+             "\"charge_status\":\"%s\",\"charge_desc\":\"%s\","
+             "\"charging\":%s,\"charge_done\":%s,"
+             "\"charge_timeout\":%s,\"trickle_timeout\":%s,\"cv_timeout\":%s,"
+             "\"load_connected\":%s,\"light_load\":%s,\"input_overvoltage\":%s,"
+             "\"button_pressed\":%s,\"button_long\":%s,\"button_short\":%s}",
+             st.voltage, st.ocv, st.current,
+             (int)st.percent,
+             battery_charge_status_name(st.charge_status),
+             battery_charge_status_desc(st.charge_status),
+             st.charging ? "true" : "false",
+             st.charge_done ? "true" : "false",
+             st.charge_timeout ? "true" : "false",
+             st.trickle_timeout ? "true" : "false",
+             st.cv_timeout ? "true" : "false",
+             st.load_connected ? "true" : "false",
+             st.light_load ? "true" : "false",
+             st.input_overvoltage ? "true" : "false",
+             st.button_pressed ? "true" : "false",
+             st.button_long_press ? "true" : "false",
+             st.button_short_press ? "true" : "false");
+
     return ESP_OK;
 }
 
@@ -1578,6 +1629,11 @@ esp_err_t app_cmd_execute_src(const char *json, char *out_buf, size_t out_len,
     /* --- 状态 --- */
     if (strcmp(cmd, "status") == 0) {
         return cmd_status(out_buf, out_len);
+    }
+
+    /* --- 电池 (IP5108 电量计) --- */
+    if (strcmp(cmd, "battery.get") == 0) {
+        return cmd_battery_get(out_buf, out_len);
     }
 
     /* --- WiFi --- */

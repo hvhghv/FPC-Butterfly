@@ -87,6 +87,7 @@ APP/
 │   ├── app_cmd.c/.h            # 命令层（传输无关，HTTP 与 BLE 共用）
 │   ├── app_http.c/.h           # HTTP 服务（传输层）
 │   ├── app_ble.c/.h            # BLE GATT 服务（传输层）
+│   ├── battery_ip5108.c/.h     # IP5108 电量计 (I2C: IO12=SCL / IO13=SDA)
 │   └── web/
 │       └── index.html          # Web 控制界面（编译时自动嵌入固件）
 └── README.md
@@ -254,6 +255,8 @@ iap> app boot
   可选「包含 WiFi 密码」用于完整迁移（含安全警告与二次确认）
 - **配置持久化**：点「保存当前配置」把灯珠状态（颜色/亮度/效果/序列/频率）
   手动保存到 NVS，断电重启后自动恢复上次保存的配置；也可清除已保存配置
+- **电池信息**：读取 IP5108 电量计（电压 / 开路电压 / 电流 / 功率 /
+  电量百分比 / 充电状态 / 按键状态），电量低时图标变橙变红
 - **设备信息**：芯片型号、IDF 版本、程序版本、MAC、空闲堆、运行时间、
   启动计数、IAP 上报版本号、AP 信息、接入客户端数
 - **操作按钮**：刷新状态 / 重启设备 / 进入 IAP 下载模式
@@ -501,9 +504,78 @@ curl -X POST --data-binary @full.json http://192.168.4.1/api/config
 > Web 界面「配置导入 / 导出」卡片支持三种方式：
 > 下载文件、显示为文本（可复制）、从文件或文本框导入。
 
-### 配置持久化（断电保存）
+### 电池信息（IP5108 电量计）
 
-灯珠状态采用**手动保存**：调整后点「保存当前配置」才写入 NVS，
+板载 IP5108 移动电源 SoC 通过 I2C 提供电池电压 / 电流 / 电量等信息。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/battery` | 读取电池状态 |
+| BLE | `{"cmd":"battery.get"}` | 同上 |
+
+响应示例：
+
+```json
+{
+  "ok": true, "available": true,
+  "voltage": 3.982, "ocv": 4.015, "current": 0.312,
+  "percent": 78,
+  "charge_status": "cc", "charge_desc": "恒流充电",
+  "charging": true, "charge_done": false,
+  "charge_timeout": false, "trickle_timeout": false, "cv_timeout": false,
+  "load_connected": false, "light_load": false, "input_overvoltage": false,
+  "button_pressed": false, "button_long": false, "button_short": false
+}
+```
+
+电量计不可用时返回 `{"ok":true,"available":false}`，前端显示提示而非报错。
+
+#### 硬件连接与 IO12/IO13 复用
+
+| 信号 | ESP32-C6 | 说明 |
+|------|----------|------|
+| SCL  | IO12     | 与 IP5108 的 L1 相连 |
+| SDA  | IO13     | 与 IP5108 的 L2 相连 |
+
+> ⚠️ **IO12/IO13 在 ESP32-C6 上是 USB Serial/JTAG 的 D-/D+**，
+> IAP 程序会把它们初始化为 USB 串口（终端 + 烧录）。
+>
+> 用户程序不使用 USB，因此 `battery_ip5108_init()` 会先做三步释放：
+> 1. `usb_serial_jtag_driver_uninstall()` 卸载 USB 串口驱动
+> 2. `usb_serial_jtag_ll_phy_enable_pad(false)` + `usb_serial_jtag_ll_enable_bus_clock(false)`
+>    关闭 USB PHY pad 与模块时钟
+>    （IDF 的 `driver_uninstall()` 源码明确注释**不会**关闭这两项，
+>    因为 stdout 可能仍依赖它，所以必须显式调用 LL 层函数）
+> 3. `gpio_reset_pin()` 复位引脚，清除 ROM/IAP 遗留配置
+>
+> **副作用**：释放后 USB 串口终端失效。本应用通过 WiFi/BLE 提供控制通道，
+> 日志仍从 UART0 输出，因此不受影响。
+
+#### I2C 协议要点
+
+- 从机地址 **0x75**（7-bit），速率 400 kHz
+- ADC 为 14-bit，各占 2 字节（低字节在前）
+
+| 寄存器 | 含义 |
+|--------|------|
+| `0x71` | 充电状态（bit7-5）+ 各阶段超时标志 |
+| `0x72` | 负载 / 输入状态 |
+| `0x77` | 按键状态 |
+| `0xA2/0xA3` | BATVADC 电池电压（充电侧，含 IR 补偿） |
+| `0xA4/0xA5` | BATIADC 电池电流（充电为正 / 放电为负） |
+| `0xA8/0xA9` | BATOCV 开路电压（用于估算电量） |
+
+**电量估算**用 BATOCV 而非 BATVADC —— 数据手册中
+`BATOCV = BATVADC + BATIADC × 内阻`，芯片已补偿充放电电流引起的 IR 压降，
+因此同一条 OCV→SOC 曲线在各充电阶段都适用，不会在阶段切换时跳变。
+曲线为 1S 锂电典型放电曲线（3.00V=0% … 4.20V=100%）分段线性插值。
+
+> **INT 引脚**：IP5108 在每次 sleep→wake 时会采样 SCL/SDA 是否上拉到 VREG
+> 来决定进入 I2C 还是 LED 指示模式，该决策在本次供电周期内不再改变。
+> 若硬件接了 INT(L3) 引脚，可把 `BATTERY_IP5108_INT_GPIO` 改为对应 GPIO，
+> 驱动会等其拉高后再访问总线，更可靠。
+
+### 配置持久化（断电保存）灯珠状态采用**手动保存**：调整后点「保存当前配置」才写入 NVS，
 断电重启后自动恢复。不保存则重启后回到上次保存的状态。
 
 | 项目 | 存储位置 | 说明 |

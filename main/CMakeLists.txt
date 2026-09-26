@@ -9,6 +9,7 @@
 #   app_cmd.c         命令层 (传输无关，HTTP 与 BLE 共用)
 #   app_http.c        HTTP 服务 (传输层)
 #   app_ble.c         BLE GATT 服务 (传输层)
+#   battery_ip5108.c  IP5108 电量计 (I2C, 复用 IO12/IO13)
 #
 # Web 页面不再内嵌在 C 源码里，而是作为独立文件放在 web/ 下，
 # 编译时由 IDF 的 EMBED_FILES 自动转成二进制并链接进来:
@@ -28,6 +29,10 @@ set(app_requires
     esp_driver_ledc
     esp_driver_mcpwm
     esp_driver_gpio
+    # IP5108 电量计通过 I2C 读取电池信息 (IO12=SCL / IO13=SDA)
+    esp_driver_i2c
+    # 需要从 USB Serial/JTAG 外设释放 IO12/IO13 (LL 层函数)
+    esp_driver_usb_serial_jtag
     esp_netif
     esp_event
     esp_http_server
@@ -60,6 +65,7 @@ idf_component_register(
         "app_cmd.c"
         "app_http.c"
         "app_ble.c"
+        "battery_ip5108.c"
     INCLUDE_DIRS
         "."
     REQUIRES

@@ -2,6 +2,7 @@
 .vscode
 build
 __pycache__
+tmp
 
 # --- ESP-IDF 生成文件 -----------------------------------------------------
 # sdkconfig 由 idf.py 根据 sdkconfig.defaults 自动生成，

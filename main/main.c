@@ -62,6 +62,7 @@
 #include "app_wifi.h"
 #include "app_http.h"
 #include "app_ble.h"
+#include "battery_ip5108.h"
 
 static const char *TAG = "led_app";
 
@@ -392,6 +393,24 @@ void app_main(void)
         } else {
             boot_animation();
         }
+    }
+
+    /*
+     * --- 4b. 初始化 IP5108 电量计 (I2C: IO12=SCL, IO13=SDA) --------------
+     *
+     * ⚠️ IO12/IO13 在 ESP32-C6 上是 USB Serial/JTAG 的 D-/D+，IAP 会把
+     *    它们初始化为 USB 串口。battery_ip5108_init() 内部会先卸载 USB
+     *    驱动并关闭 USB PHY pad，把这两个引脚释放出来给 I2C 使用。
+     *
+     *    因此本步骤**必须**在 USB 相关操作之后执行；本程序不使用 USB，
+     *    释放后 USB 串口终端失效，但 UART0 日志与 WiFi/BLE 通道不受影响。
+     *
+     * 电量计不可用时 (未接电池 / 芯片处于 LED 模式) 只告警，不中断启动。
+     */
+    err = battery_ip5108_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "IP5108 电量计不可用: %s (电池信息将显示为未知)",
+                 esp_err_to_name(err));
     }
 
     /* --- 5. 启动 WiFi (AP / STA / APSTA，按 NVS 配置) -------------------- */
