@@ -55,15 +55,19 @@ gap:8px;margin:6px 0;font-size:13px}
 .seq .sh{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--dim);margin-bottom:6px}
 /*
  * 步骤行: 用 grid 固定各列宽度, 避免 flex 在窄容器里把输入框压扁。
- *   序号 | 效果(自适应) | 时长 | 周期 | 颜色 | 亮度 | 删除
- * 时长/周期列固定 64px, 保证 "1000" 这类 4 位数完整显示。
+ *   序号 | 效果(自适应) | 时长 | 周期 | 颜色 | 亮度(滑条+数字) | 删除
+ * 时长/周期列固定 62px, 保证 "1000" 这类 4 位数完整显示。
  */
-.step{display:grid;grid-template-columns:16px minmax(0,1fr) 62px 62px 30px 56px 22px;
+.step{display:grid;grid-template-columns:16px minmax(0,1fr) 62px 62px 30px 120px 22px;
  align-items:center;gap:5px;margin:4px 0;font-size:12px}
 .step .no{color:var(--dim);text-align:right}
 .step select,.step input{width:100%;min-width:0;padding:3px 5px;font-size:12px}
+/* 亮度列: 滑条 + 数字框并排 */
+.sbwrap{display:flex;align-items:center;gap:4px;min-width:0}
+.sbwrap .sb{flex:1;min-width:0;padding:0}
+.sbwrap .sbn{width:46px;flex:none;padding:3px 4px}
 /* 步骤列表表头: 与 .step 同列宽, 标注各列含义 */
-.stephead{display:grid;grid-template-columns:16px minmax(0,1fr) 62px 62px 30px 56px 22px;
+.stephead{display:grid;grid-template-columns:16px minmax(0,1fr) 62px 62px 30px 120px 22px;
  gap:5px;font-size:10px;color:var(--dim);margin:2px 0 3px}
 .stephead span:nth-child(3),.stephead span:nth-child(4),
 .stephead span:nth-child(5),.stephead span:nth-child(6){text-align:center}
@@ -730,10 +734,11 @@ function stepRow(id,k,eff,dur,per,useColor,r,g,b,bri){
 /*
  * 每步可选颜色与亮度。
  *   - 点击颜色圆点打开色轮；未启用颜色时圆点显示斜线 (沿用全局颜色)
- *   - 亮度滑条 0-255，未启用时禁用
+ *   - 亮度: 滑条 + 数字输入框双向联动，未启用时禁用
  */
 const hex=(useColor?rgb2hex(r,g,b):'#000000');
 const bv=(bri===undefined||bri===null)?255:bri;
+const dis=useColor?'':' disabled';
 return `<div class="step" data-k="${k}" data-led="${id}">
 <span class="no">${k+1}</span>
 <select class="se" onchange="seqTouch(${id})">${EFFECTS.map(e=>
@@ -746,14 +751,27 @@ title="周期 ms (0=与时长相同)" placeholder="周期" oninput="seqTouch(${i
 style="${useColor?'background:'+hex:''}" data-hex="${useColor?hex:''}"
 title="点击选色 (右键清除)" onclick="stepPickColor(${id},${k})"
 oncontextmenu="stepClearColor(${id},${k});return false"></button>
-<input class="sb" type="range" min="0" max="255" value="${bv}"
-${useColor?'':'disabled'} title="本步亮度"
-oninput="stepBriV(this)" onchange="markStepColor(this)">
+<div class="sbwrap">
+<input class="sb" type="range" min="0" max="255" value="${bv}"${dis}
+title="本步亮度" oninput="stepBriSlide(this)" onchange="markStepColor(this)">
+<input class="sbn" type="number" min="0" max="255" value="${bv}"${dis}
+title="本步亮度 (0-255)" oninput="stepBriNum(this)" onchange="markStepColor(this)">
+</div>
 <button class="x" onclick="delStep(${id},${k})" title="删除">×</button>
 </div>`;}
 
-/** 步骤亮度滑条实时显示 (title 提示) */
-function stepBriV(inp){inp.title='本步亮度 '+inp.value;}
+/** 拖动亮度滑条 -> 同步数字框 */
+function stepBriSlide(inp){
+const row=inp.closest('.step');
+row.querySelector('.sbn').value=inp.value;}
+
+/** 输入亮度数值 -> 同步滑条 (并夹取到 0-255) */
+function stepBriNum(inp){
+let v=+inp.value;
+if(isNaN(v))v=0;
+v=Math.max(0,Math.min(255,v));
+inp.value=v;
+inp.closest('.step').querySelector('.sb').value=v;}
 
 /** 点击步骤颜色圆点 -> 打开色轮 */
 function stepPickColor(id,k){
@@ -767,8 +785,8 @@ const hex=rgb2hex(nr,ng,nb);
 btn.classList.remove('none');
 btn.style.background=hex;
 btn.dataset.hex=hex;
-/* 启用颜色后同时启用亮度滑条 */
-row.querySelector('.sb').disabled=false;});}
+/* 启用颜色后同时启用亮度控件 */
+setStepBriEnabled(row,true);});}
 
 /** 右键清除步骤颜色 (回到沿用全局颜色) */
 function stepClearColor(id,k){
@@ -778,7 +796,12 @@ const btn=row.querySelector('.cdot');
 btn.classList.add('none');
 btn.style.background='';
 btn.dataset.hex='';
-row.querySelector('.sb').disabled=true;}
+setStepBriEnabled(row,false);}
+
+/** 启用/禁用某步骤的亮度控件 (滑条 + 数字框) */
+function setStepBriEnabled(row,on){
+row.querySelector('.sb').disabled=!on;
+row.querySelector('.sbn').disabled=!on;}
 
 /* 改动亮度时自动启用该步颜色 (亮度需要配合颜色才有意义) */
 function markStepColor(inp){
@@ -788,7 +811,8 @@ const btn=row.querySelector('.cdot');
 if(btn.classList.contains('none')){
 btn.classList.remove('none');
 btn.style.background='#ffffff';
-btn.dataset.hex='#ffffff';}}
+btn.dataset.hex='#ffffff';
+setStepBriEnabled(row,true);}}
 
 function addStep(id,eff,dur,per,useColor,r,g,b,bri){
 seqTouch(id);
@@ -829,7 +853,7 @@ const useColor=!btn.classList.contains('none');
  * 直接 hex2rgb() 解析会得到 NaN。用 data 属性存原始 hex 最可靠。
  */
 const [r,g,b]=hex2rgb(btn.dataset.hex||'#ffffff');
-const bri=+el.querySelector('.sb').value;
+const bri=+el.querySelector('.sbn').value;
 return {
 effect:el.querySelector('.se').value,
 duration:+el.querySelector('.sd').value||1000,

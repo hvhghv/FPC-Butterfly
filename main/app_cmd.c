@@ -178,10 +178,14 @@ static esp_err_t cmd_status(char *out, size_t out_len)
     /* --- 灯珠状态 (含逐颗参数与序列) ---
      *
      * 缓冲区估算: 4 颗灯珠 × 8 步序列，每步含
-     * effect/duration/period/r/g/b/use_color ≈ 80 字节，
-     * 加上灯珠本体字段约 200 字节/颗，总计约 3.4KB，取 4096 留足余量。
+     * effect/duration/period/r/g/b/brightness/use_color ≈ 90 字节，
+     * 加上灯珠本体字段约 200 字节/颗，总计约 3.7KB，取 4096 留足余量。
+     *
+     * ⚠️ 用 static 而非栈分配: HTTP 任务栈仅 8KB，4KB 的栈缓冲叠加
+     *    调用链后极易溢出 (表现为设备重启 + 浏览器 "Failed to fetch")。
+     *    本函数由 HTTP 任务串行调用，无重入风险。
      */
-    char leds[4096];
+    static char leds[4096];
     esp_err_t err = led_ctrl_to_json(leds, sizeof(leds));
     if (err != ESP_OK) {
         return reply_error(out, out_len, "读取灯珠状态失败");
@@ -824,7 +828,11 @@ static esp_err_t cmd_battery_refresh(char *out, size_t out_len)
     }
 
     /* 重新探测成功: 复用 battery.get 的输出，再插入 reinit 字段 */
-    char tmp[APP_CMD_RESP_MAX];
+    /*
+     * ⚠️ 用 static 而非栈分配: APP_CMD_RESP_MAX 已达 8KB，
+     *    与 HTTP 任务栈 (8KB) 同量级，栈分配必然溢出。
+     */
+    static char tmp[APP_CMD_RESP_MAX];
     esp_err_t e = cmd_battery_get(tmp, sizeof(tmp));
     if (e != ESP_OK) {
         return e;

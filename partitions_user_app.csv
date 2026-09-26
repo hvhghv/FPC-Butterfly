@@ -12,11 +12,12 @@
 #
 #  布局:
 #    0x140000   4KB    分区表 B       <- 本文件 (分区表必须在所有分区之前)
-#    0x141000  12KB    nvs_app        (NVS 最小 0x3000)
-#    0x144000  48KB    (保留空隙)     (使 user_app 64KB 对齐)
+#    0x141000  32KB    nvs            (NVS 扩容: 原 12KB 不足以容纳
+#                                      灯珠配置 blob + WiFi 配置 + BLE 配对码)
+#    0x149000  28KB    (保留空隙)     (使 user_app 64KB 对齐)
 #    0x150000  剩余    user_app       (可用 2.69 MB)
 #
 # Name,     Type,    SubType, Offset,   Size,     Flags
 
-nvs,        data,   nvs,      0x141000, 0x003000,
+nvs,        data,   nvs,      0x141000, 0x008000,
 user_app,   app,    ota_0,    0x150000, 0x2B0000,

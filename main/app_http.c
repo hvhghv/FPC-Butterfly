@@ -26,8 +26,15 @@
 
 static const char *TAG = "app_http";
 
-/** 请求体最大长度 (序列命令较长，放宽) */
-#define HTTP_BODY_MAX       512
+/**
+ * 请求体最大长度。
+ *
+ * 序列命令是最大的请求体: 8 步 × 每步含
+ * effect/duration/period/r/g/b/brightness ≈ 110 字节 ≈ 900 字节，
+ * 加上 {"cmd":"led.sequence",...} 外壳约 30 字节。
+ * 取 2048 留足余量。
+ */
+#define HTTP_BODY_MAX       2048
 
 /** 命令响应缓冲区长度 */
 #define HTTP_RESP_MAX       APP_CMD_RESP_MAX
@@ -449,7 +456,15 @@ esp_err_t app_http_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers  = sizeof(s_uris) / sizeof(s_uris[0]) + 2;
-    config.stack_size        = 8192;
+    /*
+     * HTTP 任务栈。
+     *
+     * cmd_status 内部有 4KB 灯珠 JSON 缓冲 (已改为 static)，
+     * run_cmd 还会 malloc 8KB 响应缓冲。栈取 12KB 留足余量，
+     * 避免深层调用链 + 局部变量导致溢出 (表现为设备重启、
+     * 浏览器报 "Failed to fetch")。
+     */
+    config.stack_size        = 12288;
     config.lru_purge_enable  = true;
     /*
      * 超时设置:
