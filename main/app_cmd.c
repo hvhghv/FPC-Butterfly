@@ -522,7 +522,11 @@ static esp_err_t cmd_led_sequence(const char *json, char *out, size_t out_len)
         }
 
         size_t obj_len = (size_t)(obj_end - p) + 1;
-        char obj[160];
+        /*
+         * 步骤对象含 effect/duration/period/r/g/b/brightness，约 110 字节。
+         * 取 256 留足余量，避免长效果名 + 大数值时被截断。
+         */
+        char obj[256];
         if (obj_len >= sizeof(obj)) {
             return reply_error(out, out_len, "步骤过长");
         }

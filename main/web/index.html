@@ -434,7 +434,21 @@ document.getElementById('dot').className=isErr?'dot err':'dot';}
 
 function rgb2hex(r,g,b){return '#'+[r,g,b].map(v=>
 Math.max(0,Math.min(255,v|0)).toString(16).padStart(2,'0')).join('');}
-function hex2rgb(h){return [parseInt(h.substr(1,2),16),parseInt(h.substr(3,2),16),
+/**
+ * 解析颜色字符串 -> [r,g,b]。
+ *
+ * 同时支持 "#RRGGBB" 与浏览器规范化的 "rgb(r, g, b)" 两种格式 ——
+ * 读取 style.background 时浏览器可能返回后者，直接按 hex 解析会得到 NaN。
+ */
+function hex2rgb(h){
+if(!h)return [0,0,0];
+h=String(h).trim();
+const m=h.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+if(m)return [+m[1],+m[2],+m[3]];
+if(h[0]!=='#')h='#'+h;
+if(h.length===4){/* #RGB 简写 */
+return [parseInt(h[1]+h[1],16),parseInt(h[2]+h[2],16),parseInt(h[3]+h[3],16)];}
+return [parseInt(h.substr(1,2),16),parseInt(h.substr(3,2),16),
 parseInt(h.substr(5,2),16)];}
 
 /* ============================================================================
@@ -684,6 +698,34 @@ function setLedEnable(id){
 post('/api/led/enable',{id:id-1,enabled:document.getElementById('le'+id+'e').checked});}
 
 /* --- 效果序列编辑 --- */
+
+/*
+ * 编辑锁: 记录哪些灯珠的序列正在被用户编辑。
+ *
+ * 为什么需要它: 状态轮询每 8 秒执行一次 refresh()，会用设备返回的
+ * 数据重建整个步骤列表。若不加以保护，用户正在编排的步骤会被刷掉。
+ *
+ * 仅靠 :focus-within 不够 —— 打开色轮弹层时焦点已离开步骤区域，
+ * 但用户其实还在编辑。因此用显式标志 + 超时自动释放。
+ */
+const seqEditLock={};
+/** 编辑锁超时 (毫秒): 用户停止操作后自动释放, 避免永久锁死 */
+const SEQ_LOCK_MS=120000;
+
+/** 标记某颗灯珠的序列正在编辑 (每次操作都会续期) */
+function seqTouch(id){
+seqEditLock[id]=Date.now();}
+
+/** 该灯珠的序列是否处于编辑中 */
+function seqEditing(id){
+const t=seqEditLock[id];
+if(!t)return false;
+if(Date.now()-t>SEQ_LOCK_MS){delete seqEditLock[id];return false;}
+return true;}
+
+/** 结束编辑 (应用/清空后调用, 让轮询可以正常回填) */
+function seqEndEdit(id){delete seqEditLock[id];}
+
 function stepRow(id,k,eff,dur,per,useColor,r,g,b,bri){
 /*
  * 每步可选颜色与亮度。
@@ -692,13 +734,16 @@ function stepRow(id,k,eff,dur,per,useColor,r,g,b,bri){
  */
 const hex=(useColor?rgb2hex(r,g,b):'#000000');
 const bv=(bri===undefined||bri===null)?255:bri;
-return `<div class="step" data-k="${k}">
+return `<div class="step" data-k="${k}" data-led="${id}">
 <span class="no">${k+1}</span>
-<select class="se">${EFFECTS.map(e=>
+<select class="se" onchange="seqTouch(${id})">${EFFECTS.map(e=>
 `<option value="${e[0]}"${e[0]===eff?' selected':''}>${e[1]}</option>`).join('')}</select>
-<input class="sd" type="number" min="10" max="600000" step="100" value="${dur}" title="时长 ms" placeholder="时长">
-<input class="sp" type="number" min="0" max="60000" step="100" value="${per}" title="周期 ms (0=与时长相同)" placeholder="周期">
-<button class="cdot${useColor?'':' none'}" style="${useColor?'background:'+hex:''}"
+<input class="sd" type="number" min="10" max="600000" step="100" value="${dur}"
+title="时长 ms" placeholder="时长" oninput="seqTouch(${id})">
+<input class="sp" type="number" min="0" max="60000" step="100" value="${per}"
+title="周期 ms (0=与时长相同)" placeholder="周期" oninput="seqTouch(${id})">
+<button class="cdot${useColor?'':' none'}"
+style="${useColor?'background:'+hex:''}" data-hex="${useColor?hex:''}"
 title="点击选色 (右键清除)" onclick="stepPickColor(${id},${k})"
 oncontextmenu="stepClearColor(${id},${k});return false"></button>
 <input class="sb" type="range" min="0" max="255" value="${bv}"
@@ -712,33 +757,41 @@ function stepBriV(inp){inp.title='本步亮度 '+inp.value;}
 
 /** 点击步骤颜色圆点 -> 打开色轮 */
 function stepPickColor(id,k){
+seqTouch(id);
 const row=document.querySelector('#sq'+id+' .step[data-k="'+k+'"]');
 const btn=row.querySelector('.cdot');
-const cur=btn.classList.contains('none')?'#ffffff':btn.style.background;
-const [r,g,b]=hex2rgb(cur.startsWith('#')?cur:'#ffffff');
+const cur=btn.dataset.hex||'#ffffff';
+const [r,g,b]=hex2rgb(cur);
 openWheel('D'+id+' 第 '+(k+1)+' 步颜色',r,g,b,(nr,ng,nb)=>{
+const hex=rgb2hex(nr,ng,nb);
 btn.classList.remove('none');
-btn.style.background=rgb2hex(nr,ng,nb);
+btn.style.background=hex;
+btn.dataset.hex=hex;
 /* 启用颜色后同时启用亮度滑条 */
 row.querySelector('.sb').disabled=false;});}
 
 /** 右键清除步骤颜色 (回到沿用全局颜色) */
 function stepClearColor(id,k){
+seqTouch(id);
 const row=document.querySelector('#sq'+id+' .step[data-k="'+k+'"]');
 const btn=row.querySelector('.cdot');
 btn.classList.add('none');
 btn.style.background='';
+btn.dataset.hex='';
 row.querySelector('.sb').disabled=true;}
 
 /* 改动亮度时自动启用该步颜色 (亮度需要配合颜色才有意义) */
 function markStepColor(inp){
 const row=inp.closest('.step');
+seqTouch(+row.dataset.led);
 const btn=row.querySelector('.cdot');
 if(btn.classList.contains('none')){
 btn.classList.remove('none');
-btn.style.background='#ffffff';}}
+btn.style.background='#ffffff';
+btn.dataset.hex='#ffffff';}}
 
 function addStep(id,eff,dur,per,useColor,r,g,b,bri){
+seqTouch(id);
 const box=document.getElementById('sq'+id);
 const k=box.querySelectorAll('.step').length;
 if(k>=MAX_STEPS){log('最多 '+MAX_STEPS+' 个步骤');return;}
@@ -750,6 +803,7 @@ box.insertAdjacentHTML('beforeend',
 stepRow(id,k,eff||'none',dur||1000,per||0,useColor,r,g,b,bri));}
 
 function delStep(id,k){
+seqTouch(id);
 const box=document.getElementById('sq'+id);
 const row=box.querySelector('.step[data-k="'+k+'"]');
 if(row)row.remove();
@@ -768,7 +822,13 @@ const box=document.getElementById('sq'+id);
 return [...box.querySelectorAll('.step')].map(el=>{
 const btn=el.querySelector('.cdot');
 const useColor=!btn.classList.contains('none');
-const [r,g,b]=hex2rgb(btn.style.background||'#ffffff');
+/*
+ * 颜色存在 data-hex 上（而不是读 style.background）。
+ *
+ * 浏览器会把 style.background 规范化成 "rgb(0, 255, 255)" 这类格式，
+ * 直接 hex2rgb() 解析会得到 NaN。用 data 属性存原始 hex 最可靠。
+ */
+const [r,g,b]=hex2rgb(btn.dataset.hex||'#ffffff');
 const bri=+el.querySelector('.sb').value;
 return {
 effect:el.querySelector('.se').value,
@@ -781,11 +841,17 @@ function applySeq(id){
 const steps=readSteps(id);
 if(!steps.length){clearSeq(id);return;}
 post('/api/led/sequence',{id:id-1,steps:steps})
-.then(r=>{if(r)log('D'+id+' 序列已应用 ('+steps.length+' 步)');});}
+.then(r=>{
+if(r){
+/* 应用成功: 释放编辑锁, 让轮询恢复回填 */
+seqEndEdit(id);
+log('D'+id+' 序列已应用 ('+steps.length+' 步'
++(steps.some(s=>s.r!==undefined)?'，含自定义颜色':'')+')');}});}
 
 function clearSeq(id){
 document.getElementById('sq'+id).innerHTML='';
 document.getElementById('sqs'+id).textContent='';
+seqEndEdit(id);
 post('/api/led/sequence',{id:id-1,steps:[]})
 .then(r=>{if(r)log('D'+id+' 序列已清空，回退到单效果');});}
 
@@ -1349,7 +1415,7 @@ document.getElementById('le'+i+'e').checked=!!l.enabled;
 document.getElementById('card'+i).className='led'+(l.enabled?'':' off');
 /* 效果序列: 仅在用户未编辑时回填，避免覆盖正在编辑的内容 */
 const sq=document.getElementById('sq'+i);
-if(!sq.matches(':focus-within')){
+if(!seqEditing(i)&&!sq.matches(':focus-within')){
 sq.innerHTML='';(l.steps||[]).forEach((s,k)=>
 addStep(i,s.effect,s.duration,s.period,
 s.use_color,s.r,s.g,s.b,s.brightness));
