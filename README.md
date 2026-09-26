@@ -79,9 +79,10 @@ APP/
 │   └── pages.yml               # 部署 Web 页面到 GitHub Pages
 ├── main/
 │   ├── CMakeLists.txt
-│   ├── main.c                  # 应用入口、IAP 对接、上电自检动画
+│   ├── main.c                  # 应用入口、IAP 对接、上电加载配置、自检动画
 │   ├── iap_user_api.c/.h       # IAP 对接接口（从 IAP 工程复制）
 │   ├── led_ctrl.c/.h           # 12 路双硬件 PWM 驱动 (LEDC+MCPWM) + 逐颗效果引擎
+│   │                           #   含 NVS 配置持久化 (save/load/clear_saved)
 │   ├── app_wifi.c/.h           # WiFi AP/STA/APSTA（可配置，存 NVS）
 │   ├── app_cmd.c/.h            # 命令层（传输无关，HTTP 与 BLE 共用）
 │   ├── app_http.c/.h           # HTTP 服务（传输层）
@@ -251,6 +252,8 @@ iap> app boot
 - **设备状态**：WiFi 热点 / 路由器 / 蓝牙 / 系统四张状态卡，含信号强度与信道
 - **配置导入 / 导出**：导出为 JSON 文件、显示为文本、从文件或文本框导入；
   可选「包含 WiFi 密码」用于完整迁移（含安全警告与二次确认）
+- **配置持久化**：点「保存当前配置」把灯珠状态（颜色/亮度/效果/序列/频率）
+  手动保存到 NVS，断电重启后自动恢复上次保存的配置；也可清除已保存配置
 - **设备信息**：芯片型号、IDF 版本、程序版本、MAC、空闲堆、运行时间、
   启动计数、IAP 上报版本号、AP 信息、接入客户端数
 - **操作按钮**：刷新状态 / 重启设备 / 进入 IAP 下载模式
@@ -439,6 +442,8 @@ BLE 与 WiFi 共用 2.4 GHz 射频，已开启软件共存 (`CONFIG_SW_COEXIST_E
 | GET | `/api/config` | — | 导出配置（**不含密码**） |
 | POST | `/api/config/export` | `{"secrets":1}` | 导出配置（**含密码明文**） |
 | POST | `/api/config` | 导出的 JSON | 导入配置 |
+| POST | `/api/config/save` | — | 保存当前配置到 NVS |
+| POST | `/api/config/reset` | — | 清除已保存配置（下次上电用默认值） |
 
 导出内容：
 
@@ -496,6 +501,39 @@ curl -X POST --data-binary @full.json http://192.168.4.1/api/config
 > Web 界面「配置导入 / 导出」卡片支持三种方式：
 > 下载文件、显示为文本（可复制）、从文件或文本框导入。
 
+### 配置持久化（断电保存）
+
+灯珠状态采用**手动保存**：调整后点「保存当前配置」才写入 NVS，
+断电重启后自动恢复。不保存则重启后回到上次保存的状态。
+
+| 项目 | 存储位置 | 说明 |
+|------|---------|------|
+| 灯珠状态 | NVS 命名空间 `ledcfg`，键 `state` | 颜色 / 亮度 / 效果 / 周期 / 序列 / 频率 / 反转 / 熄灭 |
+| WiFi 配置 | NVS 命名空间 `wificfg` | 模式 / SSID / 密码 / 信道 / 静态 IP 等 |
+| 蓝牙配对码 | NVS 命名空间 `blecfg` | 6 位配对码 |
+
+**手动保存**：只有 `config.save` 命令（前端「保存当前配置」按钮）
+会写入 NVS。其他命令（`led.set` / `led.effect` / `led.brightness` /
+`led.enable` / `led.sequence` / `all` / `brightness` / `effect` /
+`off` / `freq`）仅改变运行状态、**不落盘**，避免拖动滑条时频繁写 flash。
+
+**上电加载**：`main.c` 启动流程中，`led_ctrl_init()` 之后立即调用
+`led_ctrl_load()`；若有已保存记录，直接恢复上次状态并**跳过自检动画**，
+否则播放自检动画并使用默认值。
+
+**手动控制**：
+
+```bash
+# 保存当前配置（唯一保存入口）
+curl -X POST http://192.168.4.1/api/config/save
+
+# 清除已保存配置（下次上电恢复默认值，当前显示不变）
+curl -X POST http://192.168.4.1/api/config/reset
+```
+
+> 存储格式为带版本号的 blob（当前 `LED_NVS_VERSION = 1`），
+> 结构变更时递增版本号即可让旧数据自动失效，回退到默认值。
+
 ### 命令名对照 (BLE)
 
 BLE 通道使用同一套命令名：
@@ -505,6 +543,8 @@ BLE 通道使用同一套命令名：
 | `GET /api/config` | `{"cmd":"config.export"}` |
 | `POST /api/config/export` | `{"cmd":"config.export","secrets":1}` |
 | `POST /api/config` | `{"cmd":"config.import", ...}` |
+| `POST /api/config/save` | `{"cmd":"config.save"}` |
+| `POST /api/config/reset` | `{"cmd":"config.reset"}` |
 
 ---
 

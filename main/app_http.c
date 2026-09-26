@@ -362,6 +362,18 @@ static esp_err_t handler_config_import(httpd_req_t *req)
     return run_cmd_with_body(req, "config.import");
 }
 
+/** POST /api/config/save — 保存当前配置到 NVS (显式保存) */
+static esp_err_t handler_config_save(httpd_req_t *req)
+{
+    return run_cmd(req, "config.save", NULL);
+}
+
+/** POST /api/config/reset — 清除已保存的配置 (下次上电用默认值) */
+static esp_err_t handler_config_reset(httpd_req_t *req)
+{
+    return run_cmd(req, "config.reset", NULL);
+}
+
 /** 兜底路由 (通配符路径) — 返回主页面 */
 static esp_err_t handler_catch_all(httpd_req_t *req)
 {
@@ -396,6 +408,8 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/config",    .method = HTTP_GET,  .handler = handler_config_export },
     { .uri = "/api/config",    .method = HTTP_POST, .handler = handler_config_import },
     { .uri = "/api/config/export", .method = HTTP_POST, .handler = handler_config_export_post },
+    { .uri = "/api/config/save",   .method = HTTP_POST, .handler = handler_config_save },
+    { .uri = "/api/config/reset",  .method = HTTP_POST, .handler = handler_config_reset },
     /* 兜底路由必须放在最后 */
     { .uri = "/*",             .method = HTTP_GET,  .handler = handler_catch_all },
 };

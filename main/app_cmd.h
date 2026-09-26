@@ -21,9 +21,19 @@
  *   {"cmd":"config.export"}                    导出配置 (不含密码)
  *   {"cmd":"config.export","secrets":1}        导出配置 (含密码明文)
  *   {"cmd":"config.import", ...}               导入配置
+ *   {"cmd":"config.save"}                      保存当前配置到 NVS (手动保存)
+ *   {"cmd":"config.reset"}                     清除已保存配置 (下次上电用默认值)
  *
  * 响应统一为:
  *   {"ok":true, ...}   或   {"ok":false,"error":"..."}
+ *
+ * 【配置持久化】
+ *   灯珠状态的保存是**手动**的: 只有 config.save 命令 (前端「保存当前
+ *   配置」按钮) 才会写入 NVS。其他修改类命令 (led.set / led.effect /
+ *   led.brightness / led.enable / led.sequence / all / brightness /
+ *   effect / off / freq) 仅改变运行状态，不落盘 —— 这样可避免拖动
+ *   滑条时频繁写 flash。
+ *   保存后，断电重启时由 main.c 启动流程中的 led_ctrl_load() 自动恢复。
  */
 
 #pragma once

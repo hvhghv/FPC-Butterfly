@@ -1477,6 +1477,49 @@ static esp_err_t cmd_config_import(const char *json, char *out, size_t out_len)
     return ESP_OK;
 }
 
+/**
+ * @brief 保存配置 (config.save)
+ *
+ * 把当前灯珠状态写入 NVS，供下次上电自动恢复。
+ *
+ * 这是**唯一**的保存入口 —— 其他修改类命令 (led.set / effect / ...)
+ * 只改变运行状态，不会落盘，避免拖动滑条时频繁写 flash。
+ * 用户在前端点「保存当前配置」或发送本命令时才真正持久化。
+ *
+ * 请求: {"cmd":"config.save"}
+ * 响应: {"ok":true,"saved":true}
+ */
+static esp_err_t cmd_config_save(char *out, size_t out_len)
+{
+    esp_err_t err = led_ctrl_save();
+    if (err != ESP_OK) {
+        return reply_error(out, out_len, esp_err_to_name(err));
+    }
+
+    snprintf(out, out_len, "{\"ok\":true,\"saved\":true}");
+    return ESP_OK;
+}
+
+/**
+ * @brief 清除保存的配置 (config.reset)
+ *
+ * 删除 NVS 中的灯珠配置记录，下次上电恢复默认值。
+ * 当前运行状态不变，若需立即回到默认请随后重启。
+ *
+ * 请求: {"cmd":"config.reset"}
+ * 响应: {"ok":true,"cleared":true}
+ */
+static esp_err_t cmd_config_reset(char *out, size_t out_len)
+{
+    esp_err_t err = led_ctrl_clear_saved();
+    if (err != ESP_OK) {
+        return reply_error(out, out_len, esp_err_to_name(err));
+    }
+
+    snprintf(out, out_len, "{\"ok\":true,\"cleared\":true}");
+    return ESP_OK;
+}
+
 /* ============================================================================
  * 命令分发
  * ========================================================================== */
@@ -1583,6 +1626,12 @@ esp_err_t app_cmd_execute_src(const char *json, char *out_buf, size_t out_len,
     }
     if (strcmp(cmd, "config.import") == 0) {
         return cmd_config_import(json, out_buf, out_len);
+    }
+    if (strcmp(cmd, "config.save") == 0) {
+        return cmd_config_save(out_buf, out_len);
+    }
+    if (strcmp(cmd, "config.reset") == 0) {
+        return cmd_config_reset(out_buf, out_len);
     }
 
     /*

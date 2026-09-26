@@ -41,6 +41,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <inttypes.h>
 
@@ -50,12 +51,57 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "driver/ledc.h"
 #include "driver/mcpwm_prelude.h"
 
 #include "led_ctrl.h"
 
 static const char *TAG = "led_ctrl";
+
+/* ============================================================================
+ * 配置持久化 (NVS)
+ *
+ * 把灯珠状态 (颜色/亮度/效果/周期/序列/频率/反转/熄灭标志) 存到独立
+ * 命名空间 "ledcfg"，上电时由 led_ctrl_load() 自动恢复。
+ *
+ * 存储格式: 单个 blob 键 "state"，内容为 led_state_t 的紧凑副本。
+ *   - 用 blob 而非逐字段键: 结构简单、一次读写、原子性更好
+ *   - 版本字段: 将来结构变更时可识别并丢弃旧数据，避免误读
+ * ========================================================================== */
+
+/** NVS 命名空间 (灯珠配置) */
+#define LED_NVS_NAMESPACE   "ledcfg"
+
+/** NVS 键名 (状态 blob) */
+#define LED_NVS_KEY_STATE   "state"
+
+/** 持久化数据版本 (结构变更时递增) */
+#define LED_NVS_VERSION     1
+
+/**
+ * @brief 持久化记录 (与运行期 led_state_t 解耦)
+ *
+ * 单独定义而非直接存 led_state_t，是为了:
+ *   1. 未来运行期结构变更时不影响已存数据布局
+ *   2. 明确版本号，便于兼容处理
+ */
+typedef struct {
+    uint16_t version;                                   /*!< 结构版本 */
+    uint16_t reserved;                                  /*!< 对齐填充 */
+    uint8_t  rgb[LED_CTRL_COUNT][LED_CTRL_CH_PER_LED];  /*!< 各灯珠颜色 */
+    uint8_t  brightness[LED_CTRL_COUNT];                /*!< 各灯珠亮度 */
+    uint8_t  effect[LED_CTRL_COUNT];                    /*!< 各灯珠效果 */
+    uint32_t period_ms[LED_CTRL_COUNT];                 /*!< 各灯珠效果周期 */
+    uint8_t  enabled[LED_CTRL_COUNT];                   /*!< 各灯珠使能 */
+    led_step_t steps[LED_CTRL_COUNT][LED_SEQ_MAX_STEPS];/*!< 各灯珠效果序列 */
+    uint8_t  step_count[LED_CTRL_COUNT];                /*!< 各灯珠步骤数 */
+    uint32_t freq_hz;                                   /*!< PWM 频率 */
+    uint8_t  invert;                                    /*!< 输出反转 */
+    uint8_t  off;                                       /*!< 熄灭标志 */
+    uint8_t  pad[2];                                    /*!< 对齐填充 */
+} led_nvs_blob_t;
 
 /* ============================================================================
  * 硬件映射表
@@ -1530,4 +1576,226 @@ esp_err_t led_ctrl_to_json(char *buf, size_t buf_len)
     }
 
     return ESP_OK;
+}
+
+/* ============================================================================
+ * 配置持久化: 保存 / 加载
+ * ========================================================================== */
+
+/**
+ * @brief 把当前灯珠状态保存到 NVS
+ *
+ * 保存内容: 每颗灯珠的颜色、亮度、效果、周期、使能、效果序列，
+ *           以及全局 PWM 频率、输出反转、熄灭标志。
+ *
+ * 上电时由 led_ctrl_load() 自动恢复，因此调用本函数后即使断电，
+ * 下次启动也会回到当前状态。
+ *
+ * @return ESP_OK 成功
+ *         ESP_ERR_INVALID_STATE 模块未初始化
+ *         其他 NVS 错误
+ */
+esp_err_t led_ctrl_save(void)
+{
+    if (!s_inited || s_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    led_nvs_blob_t *blob = malloc(sizeof(led_nvs_blob_t));
+    if (blob == NULL) {
+        ESP_LOGE(TAG, "保存配置: 内存不足");
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* --- 在锁保护下拷贝当前状态 --- */
+    memset(blob, 0, sizeof(*blob));
+    blob->version = LED_NVS_VERSION;
+
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(200)) != pdTRUE) {
+        free(blob);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    memcpy(blob->rgb,        s_state.rgb,        sizeof(blob->rgb));
+    memcpy(blob->brightness, s_state.brightness, sizeof(blob->brightness));
+    memcpy(blob->effect,     s_state.effect,     sizeof(blob->effect));
+    memcpy(blob->period_ms,  s_state.period_ms,  sizeof(blob->period_ms));
+    memcpy(blob->steps,      s_state.steps,      sizeof(blob->steps));
+    memcpy(blob->step_count, s_state.step_count, sizeof(blob->step_count));
+    blob->freq_hz = s_state.freq_hz;
+    blob->invert  = s_state.invert ? 1 : 0;
+    blob->off     = s_state.off ? 1 : 0;
+
+    for (uint8_t i = 0; i < LED_CTRL_COUNT; i++) {
+        blob->enabled[i] = s_state.enabled[i] ? 1 : 0;
+    }
+
+    xSemaphoreGive(s_lock);
+
+    /* --- 写入 NVS --- */
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(LED_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "打开 NVS 命名空间失败: %s", esp_err_to_name(err));
+        free(blob);
+        return err;
+    }
+
+    err = nvs_set_blob(h, LED_NVS_KEY_STATE, blob, sizeof(*blob));
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    free(blob);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "写入灯珠配置失败: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "灯珠配置已保存到 NVS");
+    }
+    return err;
+}
+
+/**
+ * @brief 从 NVS 加载灯珠状态并立即生效
+ *
+ * 在 led_ctrl_init() 之后调用。若 NVS 中无有效记录 (首次启动或
+ * 版本不符)，保持默认状态并返回 ESP_ERR_NOT_FOUND。
+ *
+ * 加载后所有灯珠按保存的参数输出 (含效果与序列)。
+ *
+ * @return ESP_OK 成功恢复
+ *         ESP_ERR_NOT_FOUND 无有效保存记录 (使用默认值)
+ *         ESP_ERR_INVALID_STATE 模块未初始化
+ *         其他 NVS 错误
+ */
+esp_err_t led_ctrl_load(void)
+{
+    if (!s_inited || s_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(LED_NVS_NAMESPACE, NVS_READONLY, &h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "NVS 中无灯珠配置，使用默认值");
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "打开 NVS 命名空间失败: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    /* --- 先查大小，避免读到不匹配的旧数据 --- */
+    size_t len = 0;
+    err = nvs_get_blob(h, LED_NVS_KEY_STATE, NULL, &len);
+    if (err != ESP_OK || len != sizeof(led_nvs_blob_t)) {
+        nvs_close(h);
+        ESP_LOGW(TAG, "灯珠配置缺失或长度不符 (需 %u 字节)，使用默认值",
+                 (unsigned)sizeof(led_nvs_blob_t));
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    led_nvs_blob_t *blob = malloc(sizeof(led_nvs_blob_t));
+    if (blob == NULL) {
+        nvs_close(h);
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = nvs_get_blob(h, LED_NVS_KEY_STATE, blob, &len);
+    nvs_close(h);
+
+    if (err != ESP_OK) {
+        free(blob);
+        ESP_LOGW(TAG, "读取灯珠配置失败: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (blob->version != LED_NVS_VERSION) {
+        free(blob);
+        ESP_LOGW(TAG, "灯珠配置版本不符 (存 %u 需 %u)，使用默认值",
+                 (unsigned)blob->version, (unsigned)LED_NVS_VERSION);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* --- 应用: 先改硬件频率/反转，再逐颗恢复 --- */
+    if (blob->freq_hz >= 100 && blob->freq_hz <= 40000) {
+        led_ctrl_set_freq(blob->freq_hz);
+    }
+    led_ctrl_set_invert(blob->invert != 0);
+
+    for (uint8_t i = 0; i < LED_CTRL_COUNT; i++) {
+        uint8_t eff = blob->effect[i];
+        if (eff >= LED_EFFECT_MAX) {
+            eff = LED_EFFECT_NONE;
+        }
+        led_effect_t eff_v = (led_effect_t)eff;
+        bool en_v = (blob->enabled[i] != 0);
+
+        led_ctrl_set_led_state(i,
+                               &blob->rgb[i][LED_COLOR_R],
+                               &blob->rgb[i][LED_COLOR_G],
+                               &blob->rgb[i][LED_COLOR_B],
+                               &blob->brightness[i],
+                               &eff_v,
+                               &blob->period_ms[i],
+                               &en_v);
+
+        /* 效果序列 (step_count 为 0 时清除) */
+        uint8_t sc = blob->step_count[i];
+        if (sc > LED_SEQ_MAX_STEPS) {
+            sc = LED_SEQ_MAX_STEPS;
+        }
+        led_ctrl_set_led_sequence(i, sc ? blob->steps[i] : NULL, sc);
+    }
+
+    /*
+     * 恢复熄灭标志。
+     *
+     * s_state.off 为 true 时所有灯珠输出全灭 (但保留颜色/效果设置)，
+     * 因此需要与实际颜色分开处理: 这里直接操作内部标志。
+     */
+    if (xSemaphoreTake(s_lock, pdMS_TO_TICKS(200)) == pdTRUE) {
+        s_state.off = (blob->off != 0);
+        xSemaphoreGive(s_lock);
+    }
+
+    free(blob);
+
+    ESP_LOGI(TAG, "已从 NVS 恢复灯珠配置 (频率=%" PRIu32 " Hz)",
+             led_ctrl_get_freq());
+    return ESP_OK;
+}
+
+/**
+ * @brief 清除已保存的灯珠配置
+ *
+ * 删除 NVS 中的记录，但不改变当前运行状态。下次上电将使用默认值。
+ *
+ * @return ESP_OK 成功 (含本就无记录)
+ */
+esp_err_t led_ctrl_clear_saved(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(LED_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return ESP_OK;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_erase_key(h, LED_NVS_KEY_STATE);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        err = ESP_OK;
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "已清除保存的灯珠配置");
+    }
+    return err;
 }

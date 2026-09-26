@@ -225,6 +225,19 @@ IP 需与网关同网段，且不能与网关相同</div>
 </div>
 
 <div class="card">
+<h2>配置保存</h2>
+<div class="hint" style="font-size:12px;color:var(--dim);margin-bottom:8px">
+调整灯珠后点「保存当前配置」写入设备，断电重启后自动恢复。<br>
+<b>不保存</b>则重启后回到上次保存的状态。</div>
+<div style="margin-bottom:8px">
+<button onclick="saveCfg()">保存当前配置</button>
+<button class="gray" onclick="resetCfg()">清除已保存配置</button>
+</div>
+<div class="hint" style="font-size:11px;color:var(--dim)">
+清除后当前显示不变，下次上电将使用默认状态。</div>
+</div>
+
+<div class="card">
 <h2>配置导入 / 导出</h2>
 <div class="hint" style="font-size:12px;color:var(--dim);margin-bottom:8px">
 导出包含全部灯珠状态（颜色/亮度/效果/序列）与 WiFi 设置。</div>
@@ -747,6 +760,15 @@ const txt=document.getElementById('cfgtext').value.trim();
 if(!txt){log('文本框为空',true);return;}
 await applyCfg(txt,'文本中的');}
 
+/* --- 配置保存 / 清除 --- */
+async function saveCfg(){
+const r=await post('/api/config/save',{});
+if(r&&r.saved)log('当前配置已保存，重启后自动恢复');}
+async function resetCfg(){
+if(!confirm('确定清除已保存的配置？\n\n当前显示不变，但下次上电将恢复默认状态。'))return;
+const r=await post('/api/config/reset',{});
+if(r&&r.cleared)log('已清除保存的配置，下次上电使用默认值');}
+
 /* ============================================================================
  * 传输通道: WiFi(HTTP) / 蓝牙(BLE)
  *
@@ -784,7 +806,9 @@ const CMD_MAP={
 '/api/ble/enable':'ble.enable',
 '/api/ble/pin':'ble.pin',
 '/api/config':'config.import',
-'/api/config/export':'config.export'};
+'/api/config/export':'config.export',
+'/api/config/save':'config.save',
+'/api/config/reset':'config.reset'};
 
 /* --- BLE 状态 --- */
 const BLE_SVC='6c6f6f70-0001-4c45-4400-000000000000';

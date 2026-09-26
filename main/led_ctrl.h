@@ -445,6 +445,53 @@ bool led_ctrl_get_invert(void);
  */
 esp_err_t led_ctrl_to_json(char *buf, size_t buf_len);
 
+/* ============================================================================
+ * 配置持久化 (NVS)
+ *
+ * 把灯珠状态 (颜色/亮度/效果/周期/序列/频率/反转/熄灭) 保存到 NVS，
+ * 上电时由 led_ctrl_load() 自动恢复，实现"断电重启后保持上次配置"。
+ *
+ * 保存是**手动**的: 只有用户显式调用 led_ctrl_save() (对应 config.save
+ * 命令 / 前端「保存当前配置」按钮) 才落盘；其他设置函数只改运行状态。
+ *
+ * 典型用法:
+ *   led_ctrl_init();
+ *   led_ctrl_load();          // 有保存记录则恢复，否则用默认值
+ *   ... 用户修改后 ...
+ *   led_ctrl_save();          // 用户点「保存」时才落盘
+ * ========================================================================== */
+
+/**
+ * @brief 保存当前灯珠状态到 NVS
+ *
+ * @return ESP_OK 成功
+ *         ESP_ERR_INVALID_STATE 模块未初始化
+ *         ESP_ERR_NO_MEM 内存不足
+ *         其他 NVS 错误
+ */
+esp_err_t led_ctrl_save(void);
+
+/**
+ * @brief 从 NVS 加载灯珠状态并立即生效
+ *
+ * 应在 led_ctrl_init() 之后调用。无有效记录时保持默认状态。
+ *
+ * @return ESP_OK 成功恢复
+ *         ESP_ERR_NOT_FOUND 无有效保存记录 (使用默认值)
+ *         ESP_ERR_INVALID_STATE 模块未初始化
+ *         其他 NVS 错误
+ */
+esp_err_t led_ctrl_load(void);
+
+/**
+ * @brief 清除已保存的灯珠配置
+ *
+ * 删除 NVS 记录但不改变当前运行状态；下次上电使用默认值。
+ *
+ * @return ESP_OK 成功 (含本就无记录)
+ */
+esp_err_t led_ctrl_clear_saved(void);
+
 #ifdef __cplusplus
 }
 #endif

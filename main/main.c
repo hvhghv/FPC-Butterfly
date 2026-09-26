@@ -381,7 +381,17 @@ void app_main(void)
         ESP_LOGE(TAG, "灯珠初始化失败: %s", esp_err_to_name(err));
         /* 灯珠不可用时仍继续启动网络服务，便于远程诊断 */
     } else {
-        boot_animation();
+        /*
+         * 上电自动加载已保存的灯珠配置。
+         *
+         * 若 NVS 中有有效记录 (上次运行保存过)，直接恢复到上次的颜色/
+         * 效果/序列，跳过自检动画；否则播放自检动画并保持默认状态。
+         */
+        if (led_ctrl_load() == ESP_OK) {
+            ESP_LOGI(TAG, "已自动恢复上次的灯珠配置");
+        } else {
+            boot_animation();
+        }
     }
 
     /* --- 5. 启动 WiFi (AP / STA / APSTA，按 NVS 配置) -------------------- */
